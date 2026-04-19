@@ -1,434 +1,396 @@
 """
-Trade state manager using SQLite.
-Tracks open positions, capital deployment, cooldowns, trade history.
-No API calls — pure local state.
+Trade State Manager — SQLite-backed state for all positions and trades.
+Tracks open positions, closed trades, watchlist, and session stats.
 """
 import sqlite3
 import json
-from dataclasses import dataclass, asdict
-from datetime import datetime, timedelta
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List
+from datetime import datetime, date
 from pathlib import Path
+from config.settings import CAPITAL, RISK_PER_TRADE_PCT, TARGET_R1, TARGET_R2
 
-from config.settings import CAPITAL, MAX_POSITIONS, MAX_SECTOR_EXPOSURE, TIMEZONE
-from scoring.engine import Grade
 
 DB_PATH = Path("./trade_state.db")
 
 
 @dataclass
 class Position:
-    id:             int
-    symbol:         str
-    setup_type:     str
-    direction:      str
-    grade:          str
-    score:          float
-    confidence:     float
-    entry_price:    float
-    stop_loss:      float
-    target_price:   float
-    quantity:       int
-    entry_time:     str
-    sector:         str
-    reason:         str
-    status:         str        # "open" | "closed_win" | "closed_loss" | "closed_expired"
-    exit_price:     Optional[float] = None
-    exit_time:      Optional[str]   = None
-    pnl:            Optional[float] = None
-    pnl_r:          Optional[float] = None
-    exit_reason:    Optional[str]   = None
+    id:               int
+    symbol:           str
+    setup_type:       str
+    direction:        str
+    grade:            str
+    score:            float
+    confidence:       float
+
+    # Prices
+    entry_price:      float
+    stop_loss:        float
+    initial_sl:       float
+    target_price:     float
+    tp1_price:        float
+    tp2_price:        float
+    tp1_hit:          bool = False
+
+    # Size
+    quantity:         int   = 0
+    quantity_remaining: int = 0
+
+    # P&L
+    pnl:              float = 0.0
+    pnl_r:            float = 0.0
+
+    # Reasons
+    entry_reason:     str   = ""
+    exit_reason:      str   = ""
+    score_breakdown:  str   = "{}"
+
+    # Timestamps
+    entry_time:       str   = ""
+    exit_time:        str   = ""
+    status:           str   = "open"
+    exit_price:       Optional[float] = None
 
 
 @dataclass
 class WatchlistItem:
-    symbol:       str
-    setup_type:   str
-    score:        float
-    grade:        str
-    entry_zone:   float
-    stop_loss:    float
-    target:       float
-    added_at:     str
-    reason:       str
+    symbol:      str
+    setup_type:  str
+    score:       float
+    entry_price: float
+    stop_loss:   float
+    tp1_price:   float
+    tp2_price:   float
+    reason:      str
+    added_at:    str
 
 
 class TradeStateManager:
-    """Single source of truth for all trade state."""
 
     def __init__(self, db_path: Path = DB_PATH):
         self.db_path = db_path
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self):
-        with self._connect() as conn:
+        with self._conn() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS positions (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol        TEXT NOT NULL,
-                    setup_type    TEXT NOT NULL,
-                    direction     TEXT NOT NULL,
-                    grade         TEXT NOT NULL,
-                    score         REAL NOT NULL,
-                    confidence    REAL NOT NULL,
-                    entry_price   REAL NOT NULL,
-                    stop_loss     REAL NOT NULL,
-                    target_price  REAL NOT NULL,
-                    quantity      INTEGER NOT NULL,
-                    entry_time    TEXT NOT NULL,
-                    sector        TEXT NOT NULL,
-                    reason        TEXT NOT NULL,
-                    status        TEXT NOT NULL DEFAULT 'open',
-                    exit_price    REAL,
-                    exit_time     TEXT,
-                    pnl           REAL,
-                    pnl_r         REAL,
-                    exit_reason   TEXT
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol              TEXT NOT NULL,
+                    setup_type          TEXT,
+                    direction           TEXT DEFAULT 'long',
+                    grade               TEXT,
+                    score               REAL DEFAULT 0,
+                    confidence          REAL DEFAULT 0,
+                    entry_price         REAL,
+                    stop_loss           REAL,
+                    initial_sl          REAL,
+                    target_price        REAL,
+                    tp1_price           REAL,
+                    tp2_price           REAL,
+                    tp1_hit             INTEGER DEFAULT 0,
+                    quantity            INTEGER DEFAULT 0,
+                    quantity_remaining  INTEGER DEFAULT 0,
+                    pnl                 REAL DEFAULT 0,
+                    pnl_r               REAL DEFAULT 0,
+                    entry_reason        TEXT DEFAULT '',
+                    exit_reason         TEXT DEFAULT '',
+                    score_breakdown     TEXT DEFAULT '{}',
+                    entry_time          TEXT,
+                    exit_time           TEXT,
+                    status              TEXT DEFAULT 'open',
+                    exit_price          REAL
                 );
-
                 CREATE TABLE IF NOT EXISTS watchlist (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol      TEXT NOT NULL,
-                    setup_type  TEXT NOT NULL,
-                    score       REAL NOT NULL,
-                    grade       TEXT NOT NULL,
-                    entry_zone  REAL NOT NULL,
-                    stop_loss   REAL NOT NULL,
-                    target      REAL NOT NULL,
-                    added_at    TEXT NOT NULL,
-                    reason      TEXT NOT NULL
+                    symbol      TEXT,
+                    setup_type  TEXT,
+                    score       REAL,
+                    entry_price REAL,
+                    stop_loss   REAL,
+                    tp1_price   REAL,
+                    tp2_price   REAL,
+                    reason      TEXT,
+                    added_at    TEXT
                 );
-
-                CREATE TABLE IF NOT EXISTS cooldowns (
-                    symbol      TEXT PRIMARY KEY,
-                    until       TEXT NOT NULL,
-                    reason      TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS daily_stats (
-                    date            TEXT PRIMARY KEY,
-                    total_trades    INTEGER DEFAULT 0,
-                    wins            INTEGER DEFAULT 0,
-                    losses          INTEGER DEFAULT 0,
-                    total_pnl       REAL DEFAULT 0.0,
-                    total_r         REAL DEFAULT 0.0,
-                    capital_start   REAL NOT NULL,
-                    capital_end     REAL
+                CREATE TABLE IF NOT EXISTS session_stats (
+                    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date                TEXT UNIQUE,
+                    total_trades        INTEGER DEFAULT 0,
+                    wins                INTEGER DEFAULT 0,
+                    losses              INTEGER DEFAULT 0,
+                    total_pnl           REAL DEFAULT 0,
+                    consecutive_losses  INTEGER DEFAULT 0,
+                    best_trade_pnl      REAL DEFAULT 0,
+                    worst_trade_pnl     REAL DEFAULT 0
                 );
             """)
 
-    # ── Capital management ────────────────────────────────────────────────────
+    def open_position(self, symbol, setup_type, grade, score, confidence,
+                      entry_price, stop_loss, tp1_price, tp2_price, quantity,
+                      entry_reason="", score_breakdown=None, direction="long") -> int:
+        now = datetime.now().isoformat()
+        bd  = json.dumps(score_breakdown or {})
+        with self._conn() as conn:
+            cur = conn.execute("""
+                INSERT INTO positions
+                (symbol,setup_type,direction,grade,score,confidence,
+                 entry_price,stop_loss,initial_sl,target_price,
+                 tp1_price,tp2_price,tp1_hit,quantity,quantity_remaining,
+                 entry_reason,score_breakdown,entry_time,status)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)
+            """, (symbol,setup_type,direction,grade,score,confidence,
+                  entry_price,stop_loss,stop_loss,tp2_price,
+                  tp1_price,tp2_price,quantity,quantity,
+                  entry_reason,bd,now,"open"))
+            return cur.lastrowid
+
+    def get_open_positions(self) -> List[Position]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM positions WHERE status='open'").fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def get_position(self, position_id: int) -> Optional[Position]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM positions WHERE id=?", (position_id,)).fetchone()
+        return self._row_to_position(row) if row else None
+
+    def update_stop_loss(self, position_id: int, new_sl: float):
+        with self._conn() as conn:
+            conn.execute("UPDATE positions SET stop_loss=? WHERE id=?", (new_sl, position_id))
+
+    def mark_tp1_hit(self, position_id: int, qty_remaining: int, partial_pnl: float):
+        with self._conn() as conn:
+            conn.execute("""
+                UPDATE positions SET tp1_hit=1, quantity_remaining=?, pnl=pnl+?
+                WHERE id=?
+            """, (qty_remaining, partial_pnl, position_id))
+
+    def close_position(self, position_id, exit_price, pnl, pnl_r, status, exit_reason=""):
+        now = datetime.now().isoformat()
+        with self._conn() as conn:
+            conn.execute("""
+                UPDATE positions
+                SET exit_price=?,pnl=?,pnl_r=?,status=?,exit_reason=?,exit_time=?
+                WHERE id=?
+            """, (exit_price,pnl,pnl_r,status,exit_reason,now,position_id))
+        self._update_session_stats(pnl, status)
+
+    def add_to_watchlist(self, item: WatchlistItem):
+        with self._conn() as conn:
+            conn.execute("""
+                INSERT INTO watchlist
+                (symbol,setup_type,score,entry_price,stop_loss,tp1_price,tp2_price,reason,added_at)
+                VALUES (?,?,?,?,?,?,?,?,?)
+            """, (item.symbol,item.setup_type,item.score,item.entry_price,
+                  item.stop_loss,item.tp1_price,item.tp2_price,item.reason,item.added_at))
+
+    def clear_watchlist(self):
+        with self._conn() as conn:
+            conn.execute("DELETE FROM watchlist")
+
+    def get_watchlist(self) -> List[WatchlistItem]:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM watchlist ORDER BY score DESC").fetchall()
+        return [WatchlistItem(symbol=r["symbol"],setup_type=r["setup_type"],
+                              score=r["score"],entry_price=r["entry_price"],
+                              stop_loss=r["stop_loss"],tp1_price=r["tp1_price"],
+                              tp2_price=r["tp2_price"],reason=r["reason"],
+                              added_at=r["added_at"]) for r in rows]
+
+    def get_today_trades(self) -> List[Position]:
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM positions WHERE entry_time LIKE ? ORDER BY entry_time DESC",
+                (f"{today}%",)).fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def get_all_closed_trades(self) -> List[Position]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM positions WHERE status != 'open' ORDER BY exit_time DESC"
+            ).fetchall()
+        return [self._row_to_position(r) for r in rows]
+
+    def get_today_pnl(self) -> float:
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            result = conn.execute(
+                "SELECT COALESCE(SUM(pnl),0) FROM positions WHERE entry_time LIKE ? AND status!='open'",
+                (f"{today}%",)).fetchone()[0]
+        return float(result)
+
+    def get_consecutive_losses(self) -> int:
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT consecutive_losses FROM session_stats WHERE date=?", (today,)
+            ).fetchone()
+        return row["consecutive_losses"] if row else 0
 
     def get_deployed_capital(self) -> float:
-        """Sum of capital in all open positions."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT SUM(entry_price * quantity) FROM positions WHERE status='open'"
-            ).fetchone()
-            return row[0] or 0.0
+        return sum(p.entry_price * p.quantity_remaining for p in self.get_open_positions())
 
     def get_available_capital(self) -> float:
-        return CAPITAL - self.get_deployed_capital()
+        return max(0.0, CAPITAL - self.get_deployed_capital())
 
     def get_deployment_pct(self) -> float:
         return (self.get_deployed_capital() / CAPITAL) * 100
 
-    def calculate_position_size(
-        self,
-        entry_price: float,
-        stop_loss:   float,
-        risk_pct:    float = 0.01,
-    ) -> int:
-        """
-        Risk-based position sizing.
-        risk_pct of capital = max loss on this trade.
-        quantity = (capital × risk_pct) / SL_distance_per_share
-        """
-        sl_distance = abs(entry_price - stop_loss)
-        if sl_distance == 0:
-            return 0
-        risk_amount = CAPITAL * risk_pct
-        quantity    = int(risk_amount / sl_distance)
-        cost        = quantity * entry_price
-
-        # Never use more than 25% of capital on one trade
-        if cost > CAPITAL * 0.25:
-            quantity = int((CAPITAL * 0.25) / entry_price)
-
-        # Must fit in available capital
-        available = self.get_available_capital()
-        if cost > available:
-            quantity = int(available / entry_price)
-
-        return max(0, quantity)
-
-    # ── Open position checks ──────────────────────────────────────────────────
-
-    def get_open_positions(self) -> list[Position]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM positions WHERE status='open' ORDER BY entry_time DESC"
-            ).fetchall()
-            return [Position(**dict(row)) for row in rows]
-
-    def get_open_count(self) -> int:
-        with self._connect() as conn:
-            return conn.execute(
-                "SELECT COUNT(*) FROM positions WHERE status='open'"
-            ).fetchone()[0]
-
-    def get_sector_exposure(self, sector: str) -> float:
-        """Fraction of capital deployed in a sector."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT SUM(entry_price * quantity) FROM positions WHERE status='open' AND sector=?",
-                (sector,)
-            ).fetchone()
-            deployed_sector = row[0] or 0.0
-        return deployed_sector / CAPITAL
-
-    def is_already_holding(self, symbol: str) -> bool:
-        with self._connect() as conn:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM positions WHERE symbol=? AND status='open'",
-                (symbol,)
-            ).fetchone()[0]
-            return count > 0
-
-    # ── Allocation checks ─────────────────────────────────────────────────────
-
-    def can_enter(self, symbol: str, sector: str, entry_price: float, stop_loss: float) -> tuple[bool, str]:
-        """Full pre-entry check. Returns (can_enter, reason)."""
-
-        if self.is_already_holding(symbol):
-            return False, f"Already holding {symbol}"
-
-        if self.get_open_count() >= MAX_POSITIONS:
-            return False, f"Max positions ({MAX_POSITIONS}) reached"
-
-        sector_exp = self.get_sector_exposure(sector)
-        if sector_exp >= MAX_SECTOR_EXPOSURE:
-            return False, f"Sector cap hit: {sector} at {sector_exp*100:.0f}%"
-
-        qty = self.calculate_position_size(entry_price, stop_loss)
-        if qty == 0:
-            return False, "Position size = 0 (insufficient capital or SL too tight)"
-
-        if self.is_in_cooldown(symbol):
-            return False, f"{symbol} is in cooldown"
-
-        return True, "OK"
-
-    # ── Position CRUD ─────────────────────────────────────────────────────────
-
-    def open_position(
-        self,
-        symbol:      str,
-        setup_type:  str,
-        direction:   str,
-        grade:       str,
-        score:       float,
-        confidence:  float,
-        entry_price: float,
-        stop_loss:   float,
-        target_price: float,
-        sector:      str,
-        reason:      str,
-        risk_pct:    float = 0.01,
-    ) -> Optional[Position]:
-        qty = self.calculate_position_size(entry_price, stop_loss, risk_pct)
-        if qty == 0:
-            return None
-
-        now = datetime.now().isoformat()
-        with self._connect() as conn:
-            cursor = conn.execute("""
-                INSERT INTO positions
-                (symbol, setup_type, direction, grade, score, confidence,
-                 entry_price, stop_loss, target_price, quantity, entry_time,
-                 sector, reason, status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """, (symbol, setup_type, direction, grade, score, confidence,
-                  entry_price, stop_loss, target_price, qty, now,
-                  sector, reason, "open"))
-            pos_id = cursor.lastrowid
-
-        print(f"[TradeState] OPENED #{pos_id} {symbol} {direction} "
-              f"qty={qty} entry={entry_price} sl={stop_loss} target={target_price} "
-              f"grade={grade} score={score}")
-        return self.get_position_by_id(pos_id)
-
-    def close_position(
-        self,
-        position_id: int,
-        exit_price:  float,
-        exit_reason: str,
-    ) -> Optional[Position]:
-        pos = self.get_position_by_id(position_id)
-        if not pos or pos.status != "open":
-            return None
-
-        sl_dist = abs(pos.entry_price - pos.stop_loss)
-        pnl     = (exit_price - pos.entry_price) * pos.quantity
-        if pos.direction == "short":
-            pnl = (pos.entry_price - exit_price) * pos.quantity
-        pnl_r   = pnl / (sl_dist * pos.quantity) if sl_dist > 0 else 0.0
-
-        if pnl > 0:
-            status = "closed_win"
-        elif pnl < 0:
-            status = "closed_loss"
-        else:
-            status = "closed_expired"
-
-        now = datetime.now().isoformat()
-        with self._connect() as conn:
-            conn.execute("""
-                UPDATE positions
-                SET status=?, exit_price=?, exit_time=?, pnl=?, pnl_r=?, exit_reason=?
-                WHERE id=?
-            """, (status, exit_price, now, round(pnl, 2), round(pnl_r, 2),
-                  exit_reason, position_id))
-
-        print(f"[TradeState] CLOSED #{position_id} {pos.symbol} "
-              f"exit={exit_price} pnl=₹{pnl:.0f} ({pnl_r:.1f}R) reason={exit_reason}")
-
-        self._add_cooldown(pos.symbol, minutes=30, reason=f"Cooldown after {exit_reason}")
-        return self.get_position_by_id(position_id)
-
-    def get_position_by_id(self, pos_id: int) -> Optional[Position]:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM positions WHERE id=?", (pos_id,)).fetchone()
-            return Position(**dict(row)) if row else None
-
-    # ── Watchlist ─────────────────────────────────────────────────────────────
-
-    def add_to_watchlist(
-        self,
-        symbol: str, setup_type: str, score: float, grade: str,
-        entry_zone: float, stop_loss: float, target: float, reason: str,
-    ):
-        self.remove_from_watchlist(symbol)   # avoid duplicates
-        with self._connect() as conn:
-            conn.execute("""
-                INSERT INTO watchlist (symbol, setup_type, score, grade, entry_zone, stop_loss, target, added_at, reason)
-                VALUES (?,?,?,?,?,?,?,?,?)
-            """, (symbol, setup_type, score, grade, entry_zone, stop_loss, target,
-                  datetime.now().isoformat(), reason))
-
-    def get_watchlist(self) -> list[WatchlistItem]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM watchlist ORDER BY score DESC").fetchall()
-            return [WatchlistItem(**{k: row[k] for k in WatchlistItem.__dataclass_fields__})
-                    for row in rows]
-
-    def remove_from_watchlist(self, symbol: str):
-        with self._connect() as conn:
-            conn.execute("DELETE FROM watchlist WHERE symbol=?", (symbol,))
-
-    # ── Cooldowns ─────────────────────────────────────────────────────────────
-
-    def _add_cooldown(self, symbol: str, minutes: int = 30, reason: str = ""):
-        until = (datetime.now() + timedelta(minutes=minutes)).isoformat()
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO cooldowns (symbol, until, reason) VALUES (?,?,?)",
-                (symbol, until, reason)
-            )
-
-    def is_in_cooldown(self, symbol: str) -> bool:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT until FROM cooldowns WHERE symbol=?", (symbol,)
-            ).fetchone()
-            if not row:
-                return False
-            until = datetime.fromisoformat(row["until"])
-            if datetime.now() >= until:
-                conn.execute("DELETE FROM cooldowns WHERE symbol=?", (symbol,))
-                return False
-            return True
-
-    # ── Daily stats & P&L ─────────────────────────────────────────────────────
-
-    def get_today_pnl(self) -> float:
-        today = datetime.now().date().isoformat()
-        with self._connect() as conn:
-            row = conn.execute("""
-                SELECT COALESCE(SUM(pnl), 0) FROM positions
-                WHERE DATE(exit_time) = ? AND status != 'open'
-            """, (today,)).fetchone()
-            return row[0] or 0.0
-
-    def get_today_trades(self) -> list[Position]:
-        today = datetime.now().date().isoformat()
-        with self._connect() as conn:
-            rows = conn.execute("""
-                SELECT * FROM positions
-                WHERE DATE(entry_time) = ? ORDER BY entry_time DESC
-            """, (today,)).fetchall()
-            return [Position(**dict(row)) for row in rows]
-
-    def get_all_closed_trades(self) -> list[Position]:
-        with self._connect() as conn:
-            rows = conn.execute("""
-                SELECT * FROM positions WHERE status != 'open'
-                ORDER BY exit_time DESC
-            """).fetchall()
-            return [Position(**dict(row)) for row in rows]
-
-    def get_win_rate_by_setup(self) -> dict:
-        with self._connect() as conn:
-            rows = conn.execute("""
-                SELECT setup_type,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END) as wins,
-                       AVG(pnl_r) as avg_r
-                FROM positions WHERE status != 'open'
-                GROUP BY setup_type
-            """).fetchall()
-            return {row["setup_type"]: {
-                "total": row["total"],
-                "wins":  row["wins"],
-                "win_rate": round(row["wins"] / row["total"] * 100, 1),
-                "avg_r":    round(row["avg_r"] or 0, 2),
-            } for row in rows}
-
-    def get_win_rate_by_grade(self) -> dict:
-        with self._connect() as conn:
-            rows = conn.execute("""
-                SELECT grade,
-                       COUNT(*) as total,
-                       SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END) as wins,
-                       AVG(pnl_r) as avg_r
-                FROM positions WHERE status != 'open'
-                GROUP BY grade
-            """).fetchall()
-            return {row["grade"]: {
-                "total":    row["total"],
-                "wins":     row["wins"],
-                "win_rate": round(row["wins"] / row["total"] * 100, 1),
-                "avg_r":    round(row["avg_r"] or 0, 2),
-            } for row in rows}
-
     def get_summary(self) -> dict:
         closed = self.get_all_closed_trades()
         if not closed:
-            return {"total": 0, "wins": 0, "losses": 0, "win_rate": 0, "avg_r": 0, "total_pnl": 0}
+            return {"total":0,"wins":0,"losses":0,"win_rate":0,"avg_r":0,"total_pnl":0}
         wins   = [t for t in closed if t.status == "closed_win"]
         losses = [t for t in closed if t.status == "closed_loss"]
-        total_pnl = sum(t.pnl for t in closed if t.pnl)
-        avg_r     = sum(t.pnl_r for t in closed if t.pnl_r) / len(closed)
+        pnls   = [t.pnl for t in closed if t.pnl]
+        rs     = [t.pnl_r for t in closed if t.pnl_r]
         return {
-            "total":    len(closed),
-            "wins":     len(wins),
-            "losses":   len(losses),
-            "win_rate": round(len(wins) / len(closed) * 100, 1),
-            "avg_r":    round(avg_r, 2),
-            "total_pnl": round(total_pnl, 2),
+            "total": len(closed), "wins": len(wins), "losses": len(losses),
+            "win_rate": round(len(wins)/len(closed)*100,1),
+            "avg_r": round(sum(rs)/len(rs),2) if rs else 0,
+            "total_pnl": round(sum(pnls),0),
+            "best_trade": max(pnls) if pnls else 0,
+            "worst_trade": min(pnls) if pnls else 0,
         }
+
+    def get_win_rate_by_setup(self) -> dict:
+        closed = self.get_all_closed_trades()
+        result = {}
+        for t in closed:
+            s = t.setup_type
+            if s not in result:
+                result[s] = {"total":0,"wins":0,"pnls":[],"rs":[]}
+            result[s]["total"] += 1
+            if t.status == "closed_win": result[s]["wins"] += 1
+            if t.pnl: result[s]["pnls"].append(t.pnl)
+            if t.pnl_r: result[s]["rs"].append(t.pnl_r)
+        return {s: {"total":v["total"],"wins":v["wins"],
+                    "win_rate":round(v["wins"]/v["total"]*100,1),
+                    "avg_r":round(sum(v["rs"])/len(v["rs"]),2) if v["rs"] else 0,
+                    "total_pnl":round(sum(v["pnls"]),0)}
+                for s,v in result.items() if v["total"]>0}
+
+    def get_win_rate_by_grade(self) -> dict:
+        closed = self.get_all_closed_trades()
+        result = {}
+        for t in closed:
+            g = t.grade or "C"
+            if g not in result:
+                result[g] = {"total":0,"wins":0,"rs":[],"pnls":[]}
+            result[g]["total"] += 1
+            if t.status == "closed_win": result[g]["wins"] += 1
+            if t.pnl_r: result[g]["rs"].append(t.pnl_r)
+            if t.pnl: result[g]["pnls"].append(t.pnl)
+        return {g: {"total":v["total"],"wins":v["wins"],
+                    "win_rate":round(v["wins"]/v["total"]*100,1),
+                    "avg_r":round(sum(v["rs"])/len(v["rs"]),2) if v["rs"] else 0,
+                    "total_pnl":round(sum(v["pnls"]),0)}
+                for g,v in result.items() if v["total"]>0}
+
+    def get_win_rate_by_hour(self) -> dict:
+        closed = self.get_all_closed_trades()
+        result = {}
+        for t in closed:
+            if not t.entry_time: continue
+            try:
+                hour  = datetime.fromisoformat(t.entry_time).hour
+                label = f"{hour:02d}:00"
+                if label not in result:
+                    result[label] = {"total":0,"wins":0,"pnls":[]}
+                result[label]["total"] += 1
+                if t.status == "closed_win": result[label]["wins"] += 1
+                if t.pnl: result[label]["pnls"].append(t.pnl)
+            except Exception:
+                continue
+        return {h: {"total":v["total"],"wins":v["wins"],
+                    "win_rate":round(v["wins"]/v["total"]*100,1),
+                    "avg_pnl":round(sum(v["pnls"])/len(v["pnls"]),0) if v["pnls"] else 0}
+                for h,v in sorted(result.items()) if v["total"]>0}
+
+    def get_best_stocks(self, top_n: int = 10) -> list:
+        closed = self.get_all_closed_trades()
+        stock_pnl = {}
+        for t in closed:
+            if t.pnl:
+                stock_pnl[t.symbol] = stock_pnl.get(t.symbol, 0) + t.pnl
+        sorted_stocks = sorted(stock_pnl.items(), key=lambda x: x[1], reverse=True)
+        return [{"symbol":s,"total_pnl":round(p,0)} for s,p in sorted_stocks[:top_n]]
+
+    def is_in_cooldown(self, symbol: str, cooldown_minutes: int = 30) -> bool:
+        with self._conn() as conn:
+            row = conn.execute("""
+                SELECT exit_time FROM positions
+                WHERE symbol=? AND status!='open'
+                ORDER BY exit_time DESC LIMIT 1
+            """, (symbol,)).fetchone()
+        if not row or not row["exit_time"]: return False
+        try:
+            exit_dt = datetime.fromisoformat(row["exit_time"])
+            return (datetime.now() - exit_dt).total_seconds() / 60 < cooldown_minutes
+        except Exception:
+            return False
+
+    def _update_session_stats(self, pnl: float, status: str):
+        today   = date.today().isoformat()
+        is_win  = status == "closed_win"
+        is_loss = status == "closed_loss"
+        with self._conn() as conn:
+            existing = conn.execute(
+                "SELECT * FROM session_stats WHERE date=?", (today,)
+            ).fetchone()
+            if not existing:
+                conn.execute(
+                    "INSERT INTO session_stats (date,total_trades) VALUES (?,0)", (today,)
+                )
+                existing = conn.execute(
+                    "SELECT * FROM session_stats WHERE date=?", (today,)
+                ).fetchone()
+            consec = existing["consecutive_losses"]
+            if is_loss: consec += 1
+            elif is_win: consec = 0
+            conn.execute("""
+                UPDATE session_stats
+                SET total_trades=total_trades+1, wins=wins+?,
+                    losses=losses+?, total_pnl=total_pnl+?,
+                    consecutive_losses=?,
+                    best_trade_pnl=MAX(best_trade_pnl,?),
+                    worst_trade_pnl=MIN(worst_trade_pnl,?)
+                WHERE date=?
+            """, (1 if is_win else 0, 1 if is_loss else 0,
+                  pnl, consec, pnl, pnl, today))
+
+    def _row_to_position(self, row) -> Position:
+        return Position(
+            id=row["id"], symbol=row["symbol"],
+            setup_type=row["setup_type"] or "",
+            direction=row["direction"] or "long",
+            grade=row["grade"] or "",
+            score=row["score"] or 0,
+            confidence=row["confidence"] or 0,
+            entry_price=row["entry_price"] or 0,
+            stop_loss=row["stop_loss"] or 0,
+            initial_sl=row["initial_sl"] or row["stop_loss"] or 0,
+            target_price=row["target_price"] or 0,
+            tp1_price=row["tp1_price"] or 0,
+            tp2_price=row["tp2_price"] or 0,
+            tp1_hit=bool(row["tp1_hit"]),
+            quantity=row["quantity"] or 0,
+            quantity_remaining=row["quantity_remaining"] or 0,
+            pnl=row["pnl"] or 0,
+            pnl_r=row["pnl_r"] or 0,
+            entry_reason=row["entry_reason"] or "",
+            exit_reason=row["exit_reason"] or "",
+            score_breakdown=row["score_breakdown"] or "{}",
+            entry_time=row["entry_time"] or "",
+            exit_time=row["exit_time"] or "",
+            status=row["status"] or "open",
+            exit_price=row["exit_price"],
+        )

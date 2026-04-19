@@ -3,7 +3,7 @@ NSE Trading System Dashboard — Streamlit entry point.
 Run with: streamlit run dashboard/app.py
 
 Read-only window into the trading system.
-3 human controls only: kill switch, score threshold, max positions.
+3 human controls: kill switch, score threshold, max positions.
 Auto-refreshes every 10 seconds.
 """
 import sys, os
@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
 
-# ── Page config — MUST be first st.* call ─────────────────────────────────────
+# ── Page config — MUST be first st.* call ────────────────────────────────────
 st.set_page_config(
     page_title="NSE Trading",
     page_icon="📈",
@@ -19,37 +19,41 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# ── Mobile + general CSS ───────────────────────────────────────────────────────
+# ── Mobile + dark-mode CSS ────────────────────────────────────────────────────
 st.markdown("""
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <style>
     /* ── Mobile responsive ── */
     @media (max-width: 768px) {
-        .block-container { padding: 0.5rem 0.5rem !important; }
-        div[data-testid="column"] { min-width: 45% !important; }
+        .block-container { padding: 0.4rem 0.4rem !important; }
+        div[data-testid="column"] { min-width: 44% !important; }
         section[data-testid="stSidebar"] { width: 85vw !important; }
-        .stMetric { font-size: 0.85rem !important; }
-        h1 { font-size: 1.4rem !important; }
-        h3, h4 { font-size: 1rem !important; }
-        .stTabs [data-baseweb="tab"] { font-size: 0.85rem; padding: 6px 10px; }
-        div[data-testid="stDataFrame"] { font-size: 0.75rem !important; }
+        .stMetric { font-size: 0.8rem !important; }
+        h1 { font-size: 1.3rem !important; }
+        h3, h4 { font-size: 0.95rem !important; }
+        .stTabs [data-baseweb="tab"] { font-size: 0.78rem; padding: 5px 8px; }
+        div[data-testid="stDataFrame"] { font-size: 0.72rem !important; }
+        .stButton button { width: 100%; }
     }
     /* ── General styling ── */
     .block-container { padding-top: 0.8rem; }
     .stMetric {
-        background: #f8f9fa;
+        background: #1E1E2E;
         border-radius: 10px;
         padding: 12px 16px;
-        border: 1px solid #e9ecef;
+        border: 1px solid #2A2A3E;
     }
-    .stMetric label { font-size: 0.78rem !important; color: #6c757d; }
+    .stMetric label { font-size: 0.78rem !important; color: #9ca3af; }
     div[data-testid="stSidebar"] { min-width: 260px; }
-    /* ── Make tabs easier to tap on mobile ── */
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
+    /* ── Larger tap targets on mobile ── */
+    .stTabs [data-baseweb="tab-list"] { gap: 6px; flex-wrap: wrap; }
     .stTabs [data-baseweb="tab"] {
-        padding: 8px 16px;
+        padding: 8px 14px;
         border-radius: 8px;
+        min-height: 40px;
     }
+    /* ── Scrollable tables on mobile ── */
+    div[data-testid="stDataFrame"] { overflow-x: auto; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -58,15 +62,22 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
-from dashboard.live_tab import render_live_tab
+# ── Tab imports (all at top to avoid double set_page_config) ─────────────────
+from dashboard.live_tab      import render_live_tab
 from dashboard.analytics_tab import render_analytics_tab
-from memory.trade_state import TradeStateManager
+from dashboard.learning_tab  import render_learning_tab
+
+from memory.trade_state  import TradeStateManager
 from memory.chroma_client import ChromaMemory
-from config.settings import TIMEZONE, MIN_SCORE_ENTRY, MAX_POSITIONS, CAPITAL
+from config.settings import (
+    TIMEZONE, MIN_SCORE_ENTRY, MAX_POSITIONS, CAPITAL, PAPER_TRADING,
+)
 
 IST = ZoneInfo(TIMEZONE)
 CONTROL_FILE = Path("./system_controls.json")
 
+
+# ── Controls persistence ──────────────────────────────────────────────────────
 
 def load_controls() -> dict:
     defaults = {
@@ -91,9 +102,12 @@ def save_controls(controls: dict):
         json.dump(controls, f, indent=2)
 
 
+# ── Cached resources ──────────────────────────────────────────────────────────
+
 @st.cache_resource
 def get_state() -> TradeStateManager:
     return TradeStateManager()
+
 
 @st.cache_resource
 def get_chroma() -> ChromaMemory:
@@ -108,16 +122,35 @@ with st.sidebar:
     st.markdown("## 📈 NSE Trading")
 
     now = datetime.now(IST)
-    market_open = (now.weekday() < 5 and
-                   now.hour >= 9 and
-                   (now.hour < 15 or (now.hour == 15 and now.minute <= 30)))
-    status_color = "green" if market_open else "red"
-    st.markdown(f"**Status:** :{status_color}[{'🟢 Market open' if market_open else '🔴 Market closed'}]")
+    weekday     = now.weekday()
+    hour        = now.hour
+    minute      = now.minute
+    market_open = (
+        weekday < 5
+        and (hour > 9 or (hour == 9 and minute >= 15))
+        and (hour < 15 or (hour == 15 and minute <= 30))
+    )
+    st.markdown(
+        f"**Status:** {'🟢 Market open' if market_open else '🔴 Market closed'}"
+        f"{'  |  🧪 Paper mode' if PAPER_TRADING else '  |  🔴 LIVE mode'}"
+    )
     st.caption(f"{now.strftime('%d %b %Y  %H:%M IST')}")
+
+    # Market breadth mini-indicator in sidebar
+    breadth_cache = st.session_state.get("last_breadth", {})
+    if breadth_cache:
+        bs  = breadth_cache.get("breadth_pct", 50)
+        lbl = breadth_cache.get("breadth_label", "NEUTRAL")
+        col = "#00C853" if lbl == "BULLISH" else "#F44336" if lbl == "BEARISH" else "#FFD600"
+        st.markdown(
+            f"<div style='font-size:0.8em;color:{col};'>Breadth: {bs:.0f}% — {lbl}</div>",
+            unsafe_allow_html=True,
+        )
+
     st.divider()
 
     controls = load_controls()
-    st.markdown("### Controls")
+    st.markdown("### ⚙️ Controls")
     st.caption("3 controls only — everything else is automated")
 
     kill_switch = st.toggle(
@@ -134,36 +167,62 @@ with st.sidebar:
     )
     max_pos = st.slider(
         "Max positions",
-        min_value=1, max_value=8,
+        min_value=1, max_value=10,
         value=int(controls.get("max_positions", MAX_POSITIONS)),
         step=1, key="max_positions_slider",
     )
 
-    new_controls = {"kill_switch": kill_switch, "min_score_entry": score_threshold, "max_positions": max_pos}
+    new_controls = {
+        "kill_switch":     kill_switch,
+        "min_score_entry": score_threshold,
+        "max_positions":   max_pos,
+    }
     if new_controls != {k: controls.get(k) for k in new_controls}:
         save_controls(new_controls)
-        st.toast("Controls updated ✅")
+        st.toast("Controls saved ✅")
 
     if kill_switch:
-        st.error("KILL SWITCH ON — no new entries")
+        st.error("🛑 KILL SWITCH ON — no new entries")
 
     st.divider()
-    st.markdown("### Capital")
+
+    # ── Capital bar ───────────────────────────────────────────────────────────
+    st.markdown("### 💰 Capital")
     deployed_pct = state.get_deployment_pct()
-    st.progress(min(deployed_pct / 100, 1.0))
+    st.progress(min(deployed_pct / 100, 1.0),
+                text=f"{deployed_pct:.1f}% deployed")
     st.caption(
-        f"₹{state.get_deployed_capital():,.0f} deployed\n"
-        f"₹{state.get_available_capital():,.0f} available"
+        f"₹{state.get_deployed_capital():,.0f} in use\n"
+        f"₹{state.get_available_capital():,.0f} free"
     )
+
+    st.divider()
+
+    # ── Quick stats ───────────────────────────────────────────────────────────
+    summary = state.get_summary()
+    if summary["total"] > 0:
+        st.markdown("### 📊 All-time")
+        st.caption(
+            f"Trades: {summary['total']}  |  "
+            f"Win: {summary['win_rate']}%  |  "
+            f"Avg R: {summary['avg_r']:+.2f}  |  "
+            f"P&L: ₹{summary['total_pnl']:+,.0f}"
+        )
+
     st.divider()
     st.caption("Auto-refreshes every 10s")
-    if st.button("🔄 Refresh"):
+    if st.button("🔄 Refresh now"):
         st.rerun()
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-st.markdown("# 📈 NSE Trading System")
 
-tab1, tab2 = st.tabs(["📊 Live Trading", "📈 Analytics"])
+# ── Main ──────────────────────────────────────────────────────────────────────
+st.markdown("# 📈 NSE Intraday Trading System")
+
+tab1, tab2, tab3 = st.tabs([
+    "📊 Live Trading",
+    "📈 Analytics",
+    "🎓 Learning Lab",
+])
 
 with tab1:
     render_live_tab(state)
@@ -171,9 +230,14 @@ with tab1:
 with tab2:
     render_analytics_tab(state, chroma)
 
+with tab3:
+    render_learning_tab()
+
+
 # ── Auto-refresh ──────────────────────────────────────────────────────────────
 try:
     from streamlit_autorefresh import st_autorefresh
     st_autorefresh(interval=10_000, key="dashboard_refresh")
 except ImportError:
+    # Fallback: manual refresh button handles it
     pass
