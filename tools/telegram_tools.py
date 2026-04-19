@@ -204,3 +204,34 @@ def alert_kill_switch(activated: bool):
     status = "ACTIVATED 🛑" if activated else "DEACTIVATED ✅"
     msg    = f"🔴 <b>KILL SWITCH {status}</b> — {now}"
     _send(msg)
+
+
+def alert_premarket_gaps(gaps: list):
+    """Send top gap-up/gap-down candidates before market opens."""
+    now = datetime.now(IST).strftime("%d %b %Y %H:%M IST")
+    if not gaps:
+        _send(f"🌅 <b>PRE-MARKET — {now}</b>\nNo significant gaps today (>1.5%)")
+        return
+
+    lines = [f"🌅 <b>PRE-MARKET GAP REPORT — {now}</b>"]
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    for g in gaps[:8]:
+        emoji = "⬆️" if g.get("gap_pct", 0) > 0 else "⬇️"
+        sym   = g.get("symbol", "")
+        pct   = g.get("gap_pct", 0)
+        reason = g.get("reason", "")
+        lines.append(f"{emoji} <b>{sym:12}</b>  {pct:+.2f}%  <i>{reason}</i>")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"📌 {len(gaps)} gap candidates found — watch for ORB / breakout setups")
+    _send("\n".join(lines))
+
+
+def alert_health_failed(issues: list):
+    """Send startup health-check failure alert."""
+    now = datetime.now(IST).strftime("%H:%M IST")
+    lines = [f"🚨 <b>HEALTH CHECK FAILED — {now}</b>", "━━━━━━━━━━━━━━━━━━━━"]
+    for issue in issues:
+        lines.append(f"❌ {issue}")
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("⚠️ Fix the issues above before market opens!")
+    _send("\n".join(lines))

@@ -782,18 +782,42 @@ class TradingCrew:
     # ── Utility ───────────────────────────────────────────────────────────────
 
     def _tick_summary(self, active: int, setups: int, scored: int) -> dict:
-        now = _now_ist()
+        now      = _now_ist()
+        open_pos = self.state.get_open_positions()
+
+        # Best open position by unrealised P&L
+        best_sym    = ""
+        best_unreal = 0.0
+        if open_pos:
+            try:
+                syms   = [p.symbol for p in open_pos]
+                quotes = self.kite.get_quotes(syms)
+                for p in open_pos:
+                    curr   = quotes.get(p.symbol, {}).get("last_price", p.entry_price)
+                    unreal = (curr - p.entry_price) * p.quantity_remaining \
+                             if p.direction == "long" \
+                             else (p.entry_price - curr) * p.quantity_remaining
+                    if abs(unreal) > abs(best_unreal):
+                        best_unreal = unreal
+                        best_sym    = p.symbol
+            except Exception:
+                pass
+
         s = {
-            "tick":          self._tick,
-            "time":          now.strftime("%H:%M:%S"),
-            "active_stocks": active,
-            "setups_found":  setups,
+            "tick":           self._tick,
+            "time":           now.strftime("%H:%M:%S"),
+            "active_stocks":  active,
+            "setups_found":   setups,
             "signals_scored": scored,
-            "open_positions": len(self.state.get_open_positions()),
-            "today_pnl":     round(self.state.get_today_pnl(), 2),
+            "open_positions": len(open_pos),
+            "today_pnl":      round(self.state.get_today_pnl(), 2),
+            "best_open_sym":  best_sym,
+            "best_open_pnl":  round(best_unreal, 2),
         }
+
+        best_str = f" | best open: {best_sym} ₹{best_unreal:+,.0f}" if best_sym else ""
         print(f"[Crew] Tick #{self._tick} done: {setups} setups | "
               f"{scored} entries | "
               f"{s['open_positions']} open | "
-              f"P&L ₹{s['today_pnl']:+,.0f}")
+              f"P&L ₹{s['today_pnl']:+,.0f}{best_str}")
         return s

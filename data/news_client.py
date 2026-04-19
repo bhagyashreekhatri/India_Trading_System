@@ -34,12 +34,28 @@ Rules:
 class NewsClient:
 
     def __init__(self):
-        self.newsapi = NewsApiClient(api_key=NEWS_API_KEY)
-        self.groq    = Groq(api_key=GROQ_API_KEY)
         self._cache: dict = {}     # symbol → NewsData, refreshed every 30 min
+        self._newsapi_ok  = False
+        self._groq_ok     = False
+
+        try:
+            self.newsapi     = NewsApiClient(api_key=NEWS_API_KEY)
+            self._newsapi_ok = bool(NEWS_API_KEY)
+        except Exception as e:
+            print(f"[News] NewsAPI init failed (non-fatal): {e}")
+            self.newsapi = None
+
+        try:
+            self.groq     = Groq(api_key=GROQ_API_KEY)
+            self._groq_ok = bool(GROQ_API_KEY)
+        except Exception as e:
+            print(f"[News] Groq init failed (non-fatal): {e}")
+            self.groq = None
 
     def _fetch_headlines(self, symbol: str, company_name: str = "") -> list[str]:
         """Fetch recent news headlines for a stock."""
+        if not self._newsapi_ok or self.newsapi is None:
+            return []
         query = company_name if company_name else symbol
         try:
             response = self.newsapi.get_everything(
@@ -60,6 +76,8 @@ class NewsClient:
         Use Groq LLM to score sentiment.
         Returns (llm_score, event_type, reason)
         """
+        if not self._groq_ok or self.groq is None:
+            return 0.5, "news", ""
         import json
         try:
             prompt = SENTIMENT_PROMPT.format(symbol=symbol, headline=headline)
