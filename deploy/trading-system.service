@@ -1,0 +1,24 @@
+[Unit]
+Description=NSE Intraday Trading System
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=trading
+Group=trading
+WorkingDirectory=/opt/trading
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/trading/venv/bin/python main.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trading-system
+
+# Give it time to shutdown gracefully (for position cleanup)
+TimeoutStopSec=60
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

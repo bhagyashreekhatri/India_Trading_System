@@ -1,0 +1,49 @@
+# ── Secrets (NEVER push these) ─────────────────────────────────────────────
+.env
+kite_credentials.env
+deploy/server_config.env
+*.key
+*.pem
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ─────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+
+# ── Data / State files (server manages its own) ──────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+chroma_store/
+trade_state.db
+
+# ── macOS ────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── System controls (runtime file, not source) ───────────────────────────────
+system_controls.json
