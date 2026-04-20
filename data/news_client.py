@@ -34,7 +34,8 @@ Rules:
 class NewsClient:
 
     def __init__(self):
-        self._cache: dict = {}     # symbol → NewsData, refreshed every 30 min
+        self._cache: dict = {}          # cache_key → NewsData (daily)
+        self._rate_limited_today = False  # True once NewsAPI hits daily limit
         self._newsapi_ok  = False
         self._groq_ok     = False
 
@@ -56,6 +57,8 @@ class NewsClient:
         """Fetch recent news headlines for a stock."""
         if not self._newsapi_ok or self.newsapi is None:
             return []
+        if self._rate_limited_today:
+            return []   # stop hitting the API once we know the limit is blown
         query = company_name if company_name else symbol
         try:
             response = self.newsapi.get_everything(
@@ -68,7 +71,12 @@ class NewsClient:
             articles = response.get("articles", [])
             return [a["title"] for a in articles if a.get("title")]
         except Exception as e:
-            print(f"[News] Fetch error for {symbol}: {e}")
+            err_str = str(e)
+            if "rateLimited" in err_str or "429" in err_str or "too many requests" in err_str.lower():
+                self._rate_limited_today = True
+                print(f"[News] Rate limit hit — suspending NewsAPI calls for today")
+            else:
+                print(f"[News] Fetch error for {symbol}: {e}")
             return []
 
     def _score_sentiment_with_llm(self, symbol: str, headline: str) -> tuple[float, str, str]:
@@ -107,9 +115,13 @@ class NewsClient:
     ) -> NewsData:
         """
         Main method. Returns NewsData for a symbol.
-        Uses cache to avoid re-fetching within 30 min.
+        Caches by DAY (not hour) — once fetched today, never fetched again.
+        Developer NewsAPI = 100 requests/24h. With ~30-40 unique setup stocks
+        per day, daily caching keeps us well under the limit.
+        If the API returns rateLimited, stores a neutral result for the day
+        so we stop burning requests.
         """
-        cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d%H')}"
+        cache_key = f"{symbol}_{datetime.now().strftime('%Y%m%d')}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 

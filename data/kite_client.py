@@ -163,12 +163,20 @@ class KiteDataClient:
         return df["volume"].tail(periods).mean()
 
     def get_volume_ratio(self, symbol: str) -> Optional[float]:
-        """Current candle volume / 20-period average."""
+        """
+        Last COMPLETED candle volume / 20-period average.
+
+        Uses iloc[-2] (last fully closed 5-min candle), NOT iloc[-1].
+        Kite always appends the currently-forming candle as the last row.
+        At 10:45:34 IST the 10:45–10:50 candle has only 34s of volume
+        out of 300s — giving ratio 0.01–0.15 even on active stocks.
+        iloc[-2] is the last candle that closed with its full volume.
+        """
         df = self.get_candles(symbol, interval="5minute", days=3)
-        if df is None or len(df) < 21:
+        if df is None or len(df) < 22:   # 20 avg + 1 complete + 1 forming
             return None
-        avg = df["volume"].iloc[-21:-1].mean()
-        current = df["volume"].iloc[-1]
+        avg     = df["volume"].iloc[-22:-2].mean()   # 20 completed candles
+        current = df["volume"].iloc[-2]               # last completed candle
         return round(current / avg, 2) if avg > 0 else None
 
     # ── Bid-ask spread ────────────────────────────────────────────────────────
