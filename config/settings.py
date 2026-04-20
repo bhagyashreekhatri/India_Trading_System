@@ -86,7 +86,7 @@ SECTOR_LEADERS = {
     "FMCG":       ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "DABUR"],
     "METAL":      ["TATASTEEL", "HINDALCO", "JSWSTEEL", "COALINDIA", "VEDL"],
     "ENERGY":     ["RELIANCE", "ONGC", "BPCL", "IOC", "NTPC"],
-    "FINANCIAL":  ["BAJFINANCE", "BAJAJFINSV", "HDFC", "LICHSGFIN", "MUTHOOTFIN"],
+    "FINANCIAL":  ["BAJFINANCE", "BAJAJFINSV", "HDFCAMC", "LICHSGFIN", "MUTHOOTFIN"],
 }
 
 # ─── Timezone ─────────────────────────────────────────────────────────────────

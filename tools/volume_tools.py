@@ -71,7 +71,9 @@ def analyze_volume(symbol: str) -> str:
         kite   = _get_kite()
         ratio  = kite.get_volume_ratio(symbol) or 0.0
         spread = kite.get_spread_pct(symbol)
-        liq    = (ratio >= VOLUME_MIN_RATIO) and (spread < 0.15)
+        # spread=999.0 means Kite depth data unavailable — don't penalize that
+        spread_ok = True if spread >= 999.0 else (spread < 0.5)
+        liq    = (ratio >= VOLUME_MIN_RATIO) and spread_ok
         return json.dumps({
             "symbol":        symbol,
             "volume_ratio":  round(ratio, 3),
@@ -128,7 +130,9 @@ def batch_volume_rs(symbols: str) -> str:
         try:
             ratio  = kite.get_volume_ratio(sym) or 0.0
             spread = kite.get_spread_pct(sym)
-            liq    = (ratio >= VOLUME_MIN_RATIO) and (spread < 0.15)
+            # spread=999.0 means Kite depth unavailable — don't penalize
+            spread_ok = True if spread >= 999.0 else (spread < 0.5)
+            liq    = (ratio >= VOLUME_MIN_RATIO) and spread_ok
             delta  = round(quotes.get(sym, {}).get("change_pct", 0.0) - nifty_chg, 3)
             results.append({
                 "symbol":       sym,
@@ -152,24 +156,28 @@ def batch_volume_rs(symbols: str) -> str:
 def _compute_breadth() -> dict:
     """
     Sample BREADTH_SAMPLE_SIZE most liquid stocks.
-    Count how many have current price >= VWAP → breadth_score (0–1).
+    Uses 1 batch quote call (no historical data) — change_pct >= 0 is a solid
+    intraday proxy for "above VWAP" since price rising from open = strength.
+    Old approach: 50 get_vwap_with_candles() calls → exhausted Kite rate limit.
     """
-    kite    = _get_kite()
-    sample  = get_top_liquid_stocks(BREADTH_SAMPLE_SIZE)
+    kite   = _get_kite()
+    sample = get_top_liquid_stocks(BREADTH_SAMPLE_SIZE)
+    try:
+        quotes = kite.get_quotes(sample)   # 1 batch call — no rate limit hit
+    except Exception:
+        quotes = {}
+
     above_vwap = 0
     checked    = 0
 
     for sym in sample:
-        try:
-            df, vwap = kite.get_vwap_with_candles(sym)
-            if df is None or vwap is None:
-                continue
-            last_close = float(df.iloc[-1]["close"])
-            if last_close >= vwap:
-                above_vwap += 1
-            checked += 1
-        except Exception:
+        q = quotes.get(sym)
+        if not q:
             continue
+        # change_pct >= 0 = stock positive on the day = proxy for above VWAP
+        if q.get("change_pct", 0) >= 0:
+            above_vwap += 1
+        checked += 1
 
     breadth_score = round(above_vwap / checked, 3) if checked > 0 else 0.5
     breadth_pct   = round(breadth_score * 100, 1)
@@ -182,11 +190,11 @@ def _compute_breadth() -> dict:
         breadth_label = "NEUTRAL"
 
     return {
-        "stocks_checked":  checked,
+        "stocks_checked":    checked,
         "stocks_above_vwap": above_vwap,
-        "breadth_score":   breadth_score,
-        "breadth_pct":     breadth_pct,
-        "breadth_label":   breadth_label,
+        "breadth_score":     breadth_score,
+        "breadth_pct":       breadth_pct,
+        "breadth_label":     breadth_label,
     }
 
 
@@ -211,9 +219,12 @@ def _compute_sector_strength() -> list[dict]:
     """
     For each sector in SECTOR_LEADERS, compute:
       - avg RS delta of leader stocks vs Nifty
-      - % of leaders above VWAP
+      - % of leaders with positive change_pct (proxy for above VWAP)
       - sector_score (combined)
     Returns list sorted by sector_score descending.
+
+    Uses 2 batch quote calls total (all leaders + Nifty) instead of
+    the old approach: 8 sectors × 5 stocks × 2 API calls = 80 calls per tick.
     """
     kite = _get_kite()
 
@@ -221,6 +232,13 @@ def _compute_sector_strength() -> list[dict]:
         nifty_chg = kite.get_nifty_data().get("change_pct", 0.0)
     except Exception:
         nifty_chg = 0.0
+
+    # Collect all leader symbols and batch-fetch quotes in one call
+    all_leaders = list({sym for leaders in SECTOR_LEADERS.values() for sym in leaders})
+    try:
+        all_quotes = kite.get_quotes(all_leaders)
+    except Exception:
+        all_quotes = {}
 
     sector_results = []
 
@@ -230,24 +248,20 @@ def _compute_sector_strength() -> list[dict]:
         valid_count = 0
 
         for sym in leaders:
-            try:
-                quotes    = kite.get_quotes([sym])
-                stock_chg = quotes.get(sym, {}).get("change_pct", 0.0)
-                delta     = round(stock_chg - nifty_chg, 3)
-                rs_deltas.append(delta)
-
-                df, vwap = kite.get_vwap_with_candles(sym)
-                if df is not None and vwap is not None:
-                    if float(df.iloc[-1]["close"]) >= vwap:
-                        above_vwap += 1
-                valid_count += 1
-            except Exception:
+            q = all_quotes.get(sym)
+            if not q:
                 continue
+            stock_chg = q.get("change_pct", 0.0)
+            delta     = round(stock_chg - nifty_chg, 3)
+            rs_deltas.append(delta)
+            if stock_chg >= 0:   # positive on day = proxy for above VWAP
+                above_vwap += 1
+            valid_count += 1
 
         if valid_count == 0:
             continue
 
-        avg_rs     = round(sum(rs_deltas) / len(rs_deltas), 3) if rs_deltas else 0.0
+        avg_rs      = round(sum(rs_deltas) / len(rs_deltas), 3) if rs_deltas else 0.0
         breadth_pct = round(above_vwap / valid_count * 100, 1)
 
         # Sector score: RS contribution + breadth contribution (0–4 scale)
@@ -256,12 +270,12 @@ def _compute_sector_strength() -> list[dict]:
             2,
         )
         sector_results.append({
-            "sector":       sector,
-            "avg_rs_delta": avg_rs,
-            "breadth_pct":  breadth_pct,
+            "sector":          sector,
+            "avg_rs_delta":    avg_rs,
+            "breadth_pct":     breadth_pct,
             "leaders_checked": valid_count,
-            "sector_score": sector_score,
-            "trending":     sector_score >= 3.0,
+            "sector_score":    sector_score,
+            "trending":        sector_score >= 3.0,
         })
 
     sector_results.sort(key=lambda x: x["sector_score"], reverse=True)
