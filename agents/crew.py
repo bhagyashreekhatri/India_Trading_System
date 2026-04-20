@@ -351,20 +351,36 @@ class TradingCrew:
     # ── Agent 5+6: Volume + RS + News ────────────────────────────────────────
 
     def _get_volume_rs(self, sym: str, nifty_chg: float) -> tuple[float, float, float, bool]:
-        """Returns (volume_ratio, spread_pct, rs_delta, liquidity_pass)."""
+        """Returns (volume_ratio, spread_pct, rs_delta, liquidity_pass).
+
+        liquidity_pass = spread is acceptable (stock is tradeable).
+        Volume ratio is NOT part of liquidity_pass — it is scored separately
+        via volume_strength in the engine. This means:
+          - Wide spread (>0.5%) → hard reject (can't trade — entry/exit costs eat profit)
+          - Low volume (ratio < 1.2) → volume_strength = 0.0 → lower score → harder to reach 7.0
+          - High volume → volume_strength up to 2.0 → boosts score
+        This way a perfect setup on a liquid stock is never hard-blocked just because
+        the current 5-min candle hasn't printed 1.2x average volume yet.
+        """
         try:
-            ratio  = self.kite.get_volume_ratio(sym) or 0.0
-            spread = self.kite.get_spread_pct(sym)
-            quotes = self.kite.get_quotes([sym])
+            ratio     = self.kite.get_volume_ratio(sym) or 0.0
+            spread    = self.kite.get_spread_pct(sym)
+            quotes    = self.kite.get_quotes([sym])
             stock_chg = quotes.get(sym, {}).get("change_pct", 0.0)
-            delta  = round(stock_chg - nifty_chg, 3)
-            # spread=999.0 means Kite depth data unavailable (bid/ask empty in batch quotes)
-            # In that case pass on volume alone — don't reject quality setups for missing data
+            delta     = round(stock_chg - nifty_chg, 3)
+
+            # spread=999.0 means Kite depth data unavailable — treat as pass
             spread_ok = True if spread >= 999.0 else (spread < 0.5)
-            liq    = (ratio >= 1.2) and spread_ok
+
+            # Liquidity = can I trade this stock (spread-based only)
+            # Volume quality is captured in volume_strength via ratio
+            liq = spread_ok
+
+            print(f"[VolumeRS] {sym}: ratio={ratio:.2f} spread={'N/A' if spread >= 999.0 else f'{spread:.3f}%'} liq={liq}")
             return ratio, spread, delta, liq
-        except Exception:
-            return 0.0, 0.5, 0.0, False
+        except Exception as e:
+            print(f"[VolumeRS] {sym}: error — {e}")
+            return 0.0, 999.0, 0.0, True   # on error, pass liquidity — don't block on missing data
 
     def _get_news(self, sym: str) -> tuple[bool, float, str, str]:
         """Returns (has_news, llm_score, catalyst_type, headline)."""
