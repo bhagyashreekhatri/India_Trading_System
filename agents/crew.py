@@ -358,7 +358,10 @@ class TradingCrew:
             quotes = self.kite.get_quotes([sym])
             stock_chg = quotes.get(sym, {}).get("change_pct", 0.0)
             delta  = round(stock_chg - nifty_chg, 3)
-            liq    = (ratio >= 1.2) and (spread < 0.15)
+            # spread=999.0 means Kite depth data unavailable (bid/ask empty in batch quotes)
+            # In that case pass on volume alone — don't reject quality setups for missing data
+            spread_ok = True if spread >= 999.0 else (spread < 0.5)
+            liq    = (ratio >= 1.2) and spread_ok
             return ratio, spread, delta, liq
         except Exception:
             return 0.0, 0.5, 0.0, False
