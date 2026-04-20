@@ -498,6 +498,14 @@ class TradingCrew:
                 result = self.engine.calculate(signal, volume, context, rs, news)
                 comp   = result.components
 
+                # Per-setup score overrides — raise bar for underperforming setups
+                SETUP_MIN_SCORES = {
+                    "failed_breakdown": 7.5,   # 20% win rate historically → needs stronger confirmation
+                }
+                setup_min    = SETUP_MIN_SCORES.get(s.get("setup_type", ""), 0)
+                effective_min = max(min_score, setup_min)
+
+                will_enter = result.is_valid and comp.final_score >= effective_min
                 # Always log score so we can see what's happening
                 print(
                     f"[Scorer] {sym:12} {s['setup_type']:20} "
@@ -505,10 +513,10 @@ class TradingCrew:
                     f"(sq={comp.setup_quality:.1f} vol={comp.volume_strength:.1f} "
                     f"mkt={comp.market_alignment:.1f} rs={comp.relative_strength:.1f} "
                     f"news={comp.news_sentiment:.1f}) "
-                    f"{'✅ ENTER' if result.is_valid and comp.final_score >= min_score else '❌ skip'}"
+                    f"{'✅ ENTER' if will_enter else '❌ skip'}"
                 )
 
-                if result.is_valid and comp.final_score >= min_score:
+                if will_enter:
                     scored_item = {
                         **s,
                         "final_score": comp.final_score,
@@ -720,7 +728,10 @@ class TradingCrew:
             if p.tp1_hit and TRAILING_SL_ENABLED:
                 self._try_trail_sl(p, curr)
 
-            # ── Stall detection: >20 min, <0.2R move, not tp1 ─────────────────
+            # ── Stall detection: >45 min, <0.15R move, not tp1 ───────────────
+            # Give trades enough time to breathe — 3 min ticks mean we check
+            # every 3 min, so 45 min = 15 ticks before declaring stall.
+            # Threshold 0.15R: only exit if truly stuck, not just slow.
             if not p.tp1_hit and p.entry_time:
                 try:
                     entry_dt = datetime.fromisoformat(p.entry_time)
@@ -728,7 +739,7 @@ class TradingCrew:
                     sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
                     pnl_r    = (curr - p.entry_price) / sl_dist if p.direction == "long" \
                                else (p.entry_price - curr) / sl_dist
-                    if elapsed >= 20 and abs(pnl_r) <= 0.2:
+                    if elapsed >= 45 and abs(pnl_r) <= 0.15:
                         self._full_exit(p, curr, "stalled_no_movement")
                         continue
                 except Exception:
@@ -830,6 +841,26 @@ class TradingCrew:
             )
         except Exception:
             pass
+
+        # ChromaDB — store outcome immediately so learning is live, not just at EOD
+        try:
+            outcome = "hit_target" if reason in ("tp1_hit", "tp2_hit") else \
+                      "hit_sl"     if reason == "sl_hit" else "expired"
+            self.chroma.store_signal_outcome(
+                symbol=p.symbol,
+                setup_type=p.setup_type or "unknown",
+                regime=self._regime_cache.get("regime", "unknown"),
+                score=p.score or 0.0,
+                grade=p.grade or "B",
+                entry=p.entry_price,
+                sl=p.initial_sl or p.stop_loss,
+                target=p.tp2_price or p.tp1_price,
+                outcome=outcome,
+                pnl_r=pnl_r,
+            )
+            print(f"[ChromaDB] 📚 Stored {p.symbol} → {outcome} ({pnl_r:+.2f}R)")
+        except Exception as e:
+            print(f"[ChromaDB] Write error: {e}")
 
     # ── EOD Report ────────────────────────────────────────────────────────────
 

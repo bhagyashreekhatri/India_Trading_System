@@ -118,11 +118,11 @@ banner("🧠  ChromaDB Vector Memory (What Agent Learned)")
 try:
     chroma = ChromaMemory()
 
-    # Check each collection
+    # Check each collection (actual names from chroma_client.py)
     collections = {
-        "trade_patterns":   "Trade patterns (setups that worked/failed)",
-        "market_regimes":   "Market regime snapshots",
-        "stock_profiles":   "Per-stock performance profiles",
+        "signal_patterns":  "Trade outcomes (setups that worked/failed)",
+        "regime_context":   "Market regime snapshots",
+        "news_signals":     "News sentiment memory",
     }
 
     for col_name, description in collections.items():
