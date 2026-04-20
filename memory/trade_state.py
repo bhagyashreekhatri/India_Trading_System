@@ -131,6 +131,22 @@ class TradeStateManager:
                     worst_trade_pnl     REAL DEFAULT 0
                 );
             """)
+            # ── Schema migrations (safe to run on every startup) ───────────────
+            # ALTER TABLE ignores columns that already exist via the except clause.
+            # Add any column that was introduced after initial deployment here.
+            _migrations = [
+                "ALTER TABLE positions ADD COLUMN initial_sl       REAL    DEFAULT 0.0",
+                "ALTER TABLE positions ADD COLUMN direction        TEXT    DEFAULT 'long'",
+                "ALTER TABLE positions ADD COLUMN score_breakdown  TEXT    DEFAULT '{}'",
+                "ALTER TABLE positions ADD COLUMN quantity_remaining INTEGER DEFAULT 0",
+                "ALTER TABLE positions ADD COLUMN tp1_hit          INTEGER DEFAULT 0",
+                "ALTER TABLE positions ADD COLUMN confidence       REAL    DEFAULT 0",
+            ]
+            for sql in _migrations:
+                try:
+                    conn.execute(sql)
+                except sqlite3.OperationalError:
+                    pass   # column already exists — harmless
 
     def open_position(self, symbol, setup_type, grade, score, confidence,
                       entry_price, stop_loss, tp1_price, tp2_price, quantity,
