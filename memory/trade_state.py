@@ -156,21 +156,27 @@ class TradeStateManager:
 
     def open_position(self, symbol, setup_type, grade, score, confidence,
                       entry_price, stop_loss, tp1_price, tp2_price, quantity,
-                      entry_reason="", score_breakdown=None, direction="long") -> int:
+                      entry_reason="", score_breakdown=None, direction="long",
+                      sector="UNKNOWN") -> int:
         now = datetime.now().isoformat()
         bd  = json.dumps(score_breakdown or {})
         with self._conn() as conn:
+            # Ensure sector column exists (may not in older DBs)
+            try:
+                conn.execute("ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT 'UNKNOWN'")
+            except Exception:
+                pass
             cur = conn.execute("""
                 INSERT INTO positions
                 (symbol,setup_type,direction,grade,score,confidence,
                  entry_price,stop_loss,initial_sl,target_price,
                  tp1_price,tp2_price,tp1_hit,quantity,quantity_remaining,
-                 entry_reason,score_breakdown,entry_time,status)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?)
+                 entry_reason,score_breakdown,entry_time,status,sector)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)
             """, (symbol,setup_type,direction,grade,score,confidence,
                   entry_price,stop_loss,stop_loss,tp2_price,
                   tp1_price,tp2_price,quantity,quantity,
-                  entry_reason,bd,now,"open"))
+                  entry_reason,bd,now,"open",sector))
             return cur.lastrowid
 
     def get_open_positions(self) -> List[Position]:

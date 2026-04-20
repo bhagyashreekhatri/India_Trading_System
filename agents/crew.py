@@ -606,6 +606,7 @@ class TradingCrew:
                 entry_reason=s.get("reason", ""),
                 score_breakdown=s.get("score_breakdown"),
                 direction=s.get("direction", "long"),
+                sector=sector,
             )
 
             tx = "BUY" if s.get("direction", "long") == "long" else "SELL"
