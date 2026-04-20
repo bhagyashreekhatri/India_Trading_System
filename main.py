@@ -404,7 +404,7 @@ def main():
                   f"score≥{min_score} | max_pos={max_pos}")
 
             start   = time.time()
-            summary = crew.run_tick()
+            summary = crew.run_tick(min_score=min_score)
             elapsed = time.time() - start
 
             # Best open position P&L

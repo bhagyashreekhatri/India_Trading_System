@@ -118,7 +118,7 @@ class TradingCrew:
 
     # ── Main entry point ──────────────────────────────────────────────────────
 
-    def run_tick(self) -> dict:
+    def run_tick(self, min_score: float = None) -> dict:
         self._tick += 1
         now = _now_ist()
         print(f"\n{'='*60}")
@@ -165,7 +165,7 @@ class TradingCrew:
             return self._tick_summary(len(active), 0, 0)
 
         # 6. Score signals
-        scored = self._score_signals(setups, self._regime_cache, self._breadth_cache)
+        scored = self._score_signals(setups, self._regime_cache, self._breadth_cache, min_score=min_score)
 
         # 7. Allocate capital
         self._allocate(scored)
@@ -403,6 +403,7 @@ class TradingCrew:
         setups:      list[dict],
         regime_data: dict,
         breadth_data: dict,
+        min_score:   float = None,
     ) -> list[dict]:
         print(f"[Scorer] Scoring {len(setups)} setups...")
         scored  = []
@@ -410,8 +411,13 @@ class TradingCrew:
         nchg    = regime_data.get("nifty_change_pct", 0.0)
         bs      = breadth_data.get("breadth_score", 0.6)
 
-        # Raise score threshold during midday
-        min_score = MIN_SCORE_ENTRY_CONSERVATIVE if self._is_midday() else MIN_SCORE_ENTRY
+        # Base threshold: use dashboard value if provided, else midday/default logic
+        if min_score is None:
+            min_score = MIN_SCORE_ENTRY_CONSERVATIVE if self._is_midday() else MIN_SCORE_ENTRY
+        else:
+            # Midday: never go below conservative threshold even if dashboard says lower
+            if self._is_midday():
+                min_score = max(min_score, MIN_SCORE_ENTRY_CONSERVATIVE)
 
         # Also raise threshold if consecutive losses ≥ 3
         consec = self.state.get_consecutive_losses()
