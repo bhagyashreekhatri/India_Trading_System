@@ -24,7 +24,7 @@ CHROMA_PERSIST_DIR  = os.getenv("CHROMA_PERSIST_DIR", "./chroma_store")
 
 # ─── Trading parameters ───────────────────────────────────────────────────────
 PAPER_TRADING           = True
-CAPITAL                 = 20_000_000
+CAPITAL                 = 1_500_000
 MAX_POSITIONS           = 10              # raised for paper trading (was 5)
 MAX_SECTOR_EXPOSURE     = 0.30
 RISK_PER_TRADE_PCT      = 0.01            # 1% of capital per trade
