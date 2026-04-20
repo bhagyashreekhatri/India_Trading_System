@@ -68,7 +68,7 @@ if today_trades:
     for t in today_trades:
         status_icon = "🟢" if t.status == "closed_win" else "🔴" if t.status == "closed_loss" else "🔵"
         pnl_str = f"₹{t.pnl:+,.0f}" if t.pnl else "open"
-        print(f"  {status_icon} {t.symbol:12} | {t.grade or '-'} {t.score:.1f if t.score else 0:.1f} "
+        print(f"  {status_icon} {t.symbol:12} | {t.grade or '-'} {(t.score or 0):.1f} "
               f"| {(t.setup_type or '').replace('_',' '):20} | {pnl_str}")
 else:
     print("  No trades today yet")
