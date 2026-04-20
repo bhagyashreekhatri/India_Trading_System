@@ -80,11 +80,15 @@ class KiteDataClient:
         symbol:   str,
         interval: str = "5minute",
         days:     int = 1,
+        retries:  int = 3,
     ) -> Optional[pd.DataFrame]:
         """
-        Fetch OHLCV candles. Returns DataFrame with columns:
-        date, open, high, low, close, volume
+        Fetch OHLCV candles with auto-retry on transient Kite API errors.
+        Returns DataFrame with columns: date, open, high, low, close, volume.
+        Retries up to 3 times with 1s delay — handles 'kt-common' API blips.
         """
+        import time as _time
+
         token = self.get_token(symbol)
         if not token:
             return None
@@ -92,23 +96,30 @@ class KiteDataClient:
         to_date   = datetime.now()
         from_date = to_date - timedelta(days=days)
 
-        try:
-            data = self.kite.historical_data(
-                instrument_token=token,
-                from_date=from_date,
-                to_date=to_date,
-                interval=interval,
-            )
-            if not data:
-                return None
-            df = pd.DataFrame(data)
-            df.columns = ["date", "open", "high", "low", "close", "volume"]
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.sort_values("date").reset_index(drop=True)
-            return df
-        except Exception as e:
-            print(f"[Kite] Historical data error for {symbol}: {e}")
-            return None
+        last_error = None
+        for attempt in range(1, retries + 1):
+            try:
+                data = self.kite.historical_data(
+                    instrument_token=token,
+                    from_date=from_date,
+                    to_date=to_date,
+                    interval=interval,
+                )
+                if not data:
+                    return None
+                df = pd.DataFrame(data)
+                df.columns = ["date", "open", "high", "low", "close", "volume"]
+                df["date"] = pd.to_datetime(df["date"])
+                df = df.sort_values("date").reset_index(drop=True)
+                return df
+            except Exception as e:
+                last_error = e
+                if attempt < retries:
+                    _time.sleep(1.0 * attempt)   # 1s, 2s backoff
+                    continue
+
+        print(f"[Kite] Historical data failed for {symbol} after {retries} attempts: {last_error}")
+        return None
 
     # ── VWAP calculation ──────────────────────────────────────────────────────
 

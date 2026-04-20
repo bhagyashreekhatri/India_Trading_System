@@ -115,7 +115,7 @@ def _get_orb_levels(symbol: str) -> dict | None:
     """
     try:
         kite = _get_kite()
-        df_1min = kite.get_historical_data(symbol, interval="minute", lookback_days=1)
+        df_1min = kite.get_candles(symbol, interval="minute", days=1)
         if df_1min is None or df_1min.empty:
             return None
 
@@ -248,7 +248,7 @@ def _gap_analysis(symbol: str) -> dict:
     """
     try:
         kite = _get_kite()
-        df   = kite.get_historical_data(symbol, interval="day", lookback_days=3)
+        df   = kite.get_candles(symbol, interval="day", days=3)
         if df is None or len(df) < 2:
             return {"symbol": symbol, "gap_pct": 0.0, "gap_type": "none",
                     "tradeable": False, "reason": "Not enough history"}
