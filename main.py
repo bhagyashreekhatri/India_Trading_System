@@ -358,13 +358,31 @@ def main():
 
             # ── Market closed ─────────────────────────────────────────────
             if not is_market_open():
-                if now.weekday() < 5:
-                    print(f"[{now.strftime('%H:%M')}] Market closed — sleeping 1 hour")
-                else:
+                if now.weekday() >= 5:
+                    # Weekend — sleep 1 hour, nothing to do
                     print(f"[{now.strftime('%H:%M')}] Weekend — sleeping 1 hour")
-                time.sleep(3600)
-                eod_done       = False
-                premarket_done = False
+                    time.sleep(3600)
+                    eod_done       = False
+                    premarket_done = False
+                else:
+                    # Weekday — calculate exact sleep until 9:00 AM (pre-market)
+                    t = now.time()
+                    pre_market_start = dt_time(9, 0)
+                    if t < pre_market_start:
+                        # Before 9:00 — sleep until exactly 9:00
+                        target = now.replace(hour=9, minute=0, second=0, microsecond=0)
+                        secs   = max(10, (target - now).total_seconds())
+                        print(f"[{now.strftime('%H:%M')}] Pre-market — waking at 09:00 "
+                              f"(sleeping {secs/60:.0f} min)")
+                        time.sleep(secs)
+                        eod_done       = False
+                        premarket_done = False
+                    else:
+                        # After market close — sleep 1 hour then re-check
+                        print(f"[{now.strftime('%H:%M')}] Market closed (EOD) — sleeping 1 hour")
+                        time.sleep(3600)
+                        eod_done       = False
+                        premarket_done = False
                 continue
 
             # ── EOD job (after 15:35) ─────────────────────────────────────
