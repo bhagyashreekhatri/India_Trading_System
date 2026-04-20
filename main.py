@@ -365,11 +365,10 @@ def main():
                     eod_done       = False
                     premarket_done = False
                 else:
-                    # Weekday — calculate exact sleep until 9:00 AM (pre-market)
+                    # Weekday — smart sleep based on current time
                     t = now.time()
-                    pre_market_start = dt_time(9, 0)
-                    if t < pre_market_start:
-                        # Before 9:00 — sleep until exactly 9:00
+                    if t < dt_time(9, 0):
+                        # Before 9:00 — sleep until exactly 9:00 AM (pre-market)
                         target = now.replace(hour=9, minute=0, second=0, microsecond=0)
                         secs   = max(10, (target - now).total_seconds())
                         print(f"[{now.strftime('%H:%M')}] Pre-market — waking at 09:00 "
@@ -377,8 +376,12 @@ def main():
                         time.sleep(secs)
                         eod_done       = False
                         premarket_done = False
+                    elif t < _parse(MARKET_OPEN):
+                        # 9:00–9:15 — market opens very soon, check every 30 seconds
+                        print(f"[{now.strftime('%H:%M')}] Waiting for market open at 09:15...")
+                        time.sleep(30)
                     else:
-                        # After market close — sleep 1 hour then re-check
+                        # After market close (15:30+) — sleep 1 hour
                         print(f"[{now.strftime('%H:%M')}] Market closed (EOD) — sleeping 1 hour")
                         time.sleep(3600)
                         eod_done       = False
