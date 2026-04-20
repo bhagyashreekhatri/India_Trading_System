@@ -455,6 +455,16 @@ class TradingCrew:
                 result = self.engine.calculate(signal, volume, context, rs, news)
                 comp   = result.components
 
+                # Always log score so we can see what's happening
+                print(
+                    f"[Scorer] {sym:12} {s['setup_type']:20} "
+                    f"score={comp.final_score:.1f} "
+                    f"(sq={comp.setup_quality:.1f} vol={comp.volume_strength:.1f} "
+                    f"mkt={comp.market_alignment:.1f} rs={comp.relative_strength:.1f} "
+                    f"news={comp.news_sentiment:.1f}) "
+                    f"{'✅ ENTER' if result.is_valid and comp.final_score >= min_score else '❌ skip'}"
+                )
+
                 if result.is_valid and comp.final_score >= min_score:
                     scored_item = {
                         **s,
@@ -473,7 +483,6 @@ class TradingCrew:
                         "news_headline": headline,
                     }
                     scored.append(scored_item)
-                    print(f"[Scorer] ✅ {sym} → {comp.final_score:.1f} {comp.grade.value} | {s['setup_type']}")
 
                 elif comp.final_score >= MIN_SCORE_WATCHLIST:
                     # B-grade — add to watchlist
