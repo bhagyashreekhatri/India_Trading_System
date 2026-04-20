@@ -11,8 +11,23 @@ from zoneinfo import ZoneInfo
 
 from memory.trade_state import TradeStateManager
 from config.settings import CAPITAL, TIMEZONE
+from data.kite_client import KiteDataClient
 
 IST = ZoneInfo(TIMEZONE)
+
+@st.cache_resource
+def _get_kite():
+    return KiteDataClient()
+
+def _fetch_live_prices(symbols: list[str]) -> dict:
+    """Batch fetch live LTP for open positions. Returns symbol → last_price."""
+    if not symbols:
+        return {}
+    try:
+        quotes = _get_kite().get_quotes(symbols)
+        return {sym: quotes[sym]["last_price"] for sym in symbols if sym in quotes}
+    except Exception:
+        return {}
 
 
 def render_live_tab(state: TradeStateManager):
@@ -217,28 +232,48 @@ def _render_signals_table(signals: list):
 # ─── Open positions ───────────────────────────────────────────────────────────
 
 def _render_positions_table(positions: list):
-    """Open positions with TP1/TP2, TP1 hit badge, entry reason."""
+    """Open positions with live LTP, P&L, R — Kite-style."""
+    # Batch fetch live prices for all open positions
+    symbols   = [p.symbol for p in positions]
+    live_ltps = _fetch_live_prices(symbols)
+
     rows = []
+    total_pnl = 0.0
     for p in positions:
-        unreal = _unreal_pnl(p)
-        sl_dist = abs(p.entry_price - p.initial_sl) or 1
-        pnl_r   = round(unreal / (sl_dist * p.quantity), 2) if p.quantity > 0 else 0
+        ltp     = live_ltps.get(p.symbol, p.entry_price)
+        qty     = p.quantity_remaining or p.quantity or 0
+        unreal  = round((ltp - p.entry_price) * qty, 2)
+        chg_pct = round((ltp - p.entry_price) / p.entry_price * 100, 2) if p.entry_price else 0
+        sl_dist = abs(p.entry_price - (p.initial_sl or p.stop_loss)) or 1
+        pnl_r   = round(unreal / (sl_dist * qty), 2) if qty > 0 else 0
+        total_pnl += unreal
 
         rows.append({
-            "Stock":     p.symbol,
-            "Setup":     (p.setup_type or "").replace("_", " ").title(),
-            "Grade":     p.grade or "-",
-            "Score":     f"{p.score:.1f}" if p.score else "-",
-            "Entry ₹":   f"{p.entry_price:,.2f}",
-            "SL ₹":      f"{p.stop_loss:,.2f}",
-            "TP1 ₹":     f"{p.tp1_price:,.2f}",
-            "TP2 ₹":     f"{p.tp2_price:,.2f}",
-            "TP1 Hit":   "✅" if p.tp1_hit else "⏳",
-            "Qty left":  p.quantity_remaining,
-            "Unreal P&L": f"₹{unreal:+,.0f}",
+            "Stock":      p.symbol,
+            "Setup":      (p.setup_type or "").replace("_", " ").title(),
+            "Grade":      p.grade or "-",
+            "Score":      f"{p.score:.1f}" if p.score else "-",
+            "Avg ₹":      f"{p.entry_price:,.2f}",
+            "LTP ₹":      f"{ltp:,.2f}",
+            "Chg %":      f"{chg_pct:+.2f}%",
+            "SL ₹":       f"{p.stop_loss:,.2f}",
+            "TP1 ₹":      f"{p.tp1_price:,.2f}",
+            "TP2 ₹":      f"{p.tp2_price:,.2f}",
+            "TP1":        "✅" if p.tp1_hit else "⏳",
+            "Qty":        qty,
+            "P&L ₹":     f"₹{unreal:+,.0f}",
             "R running":  f"{pnl_r:+.1f}R",
-            "Reason":    (p.entry_reason or "")[:70],
+            "Reason":     (p.entry_reason or "")[:60],
         })
+
+    # Total P&L summary row
+    if rows:
+        pnl_color = "green" if total_pnl >= 0 else "red"
+        st.markdown(
+            f"**Total Unrealized P&L: "
+            f"<span style='color:{pnl_color};font-size:1.2em'>₹{total_pnl:+,.0f}</span>**",
+            unsafe_allow_html=True,
+        )
 
     df = pd.DataFrame(rows)
     st.dataframe(
@@ -317,6 +352,5 @@ def _render_watchlist(watchlist: list):
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def _unreal_pnl(position) -> float:
-    """Estimate unrealized P&L from position data (no live price — dashboard auto-refreshes)."""
-    sl_dist = abs(position.entry_price - position.initial_sl) if position.initial_sl else 0
+    """Fallback P&L from DB (used for summary cards). Live table uses _fetch_live_prices()."""
     return round(position.pnl, 2) if position.pnl else 0.0
