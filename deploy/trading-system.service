@@ -5,11 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=trading
-Group=trading
-WorkingDirectory=/opt/trading
+User=root
+WorkingDirectory=/root/india_trading
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/trading/venv/bin/python main.py
+ExecStart=/root/india_trading/venv/bin/python main.py
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
