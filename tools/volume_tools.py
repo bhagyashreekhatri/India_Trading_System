@@ -191,7 +191,7 @@ def _compute_breadth() -> dict:
 
 
 @tool("Get market breadth — % of stocks above VWAP")
-def get_market_breadth(_: str = "") -> str:
+def get_market_breadth(query: str = "") -> str:
     """
     Samples the top 50 NSE liquid stocks and counts how many are above VWAP.
     Returns breadth_score (0–1), breadth_pct, breadth_label (BULLISH/NEUTRAL/BEARISH).
@@ -269,7 +269,7 @@ def _compute_sector_strength() -> list[dict]:
 
 
 @tool("Get sector strength ranking for NSE sectors")
-def get_sector_strength(_: str = "") -> str:
+def get_sector_strength(query: str = "") -> str:
     """
     Ranks NSE sectors by average RS delta and % leaders above VWAP.
     Returns list sorted from strongest to weakest sector.
@@ -283,7 +283,7 @@ def get_sector_strength(_: str = "") -> str:
 
 
 @tool("Get breadth regime label for market condition")
-def get_breadth_regime(_: str = "") -> str:
+def get_breadth_regime(query: str = "") -> str:
     """
     Combines market breadth and Nifty trend to give a regime label:
     BULLISH_BREADTH / NEUTRAL_BREADTH / BEARISH_BREADTH
