@@ -6,12 +6,15 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time as dt_time
 from typing import Optional
+from zoneinfo import ZoneInfo
 from kiteconnect import KiteConnect
 
 from config.settings import (
     KITE_API_KEY, KITE_ACCESS_TOKEN, PAPER_TRADING, TIMEZONE
 )
 from config.universe import FULL_UNIVERSE, INDEX_INSTRUMENTS
+
+IST = ZoneInfo(TIMEZONE)   # Asia/Kolkata — server is UTC, Kite needs IST
 
 
 class KiteDataClient:
@@ -93,7 +96,8 @@ class KiteDataClient:
         if not token:
             return None
 
-        to_date   = datetime.now()
+        # Use IST — server is UTC, naive datetime.now() would give wrong date range
+        to_date   = datetime.now(IST).replace(tzinfo=None)
         from_date = to_date - timedelta(days=days)
 
         last_error = None
