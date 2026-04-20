@@ -24,10 +24,11 @@ CHROMA_PERSIST_DIR  = os.getenv("CHROMA_PERSIST_DIR", "./chroma_store")
 
 # ─── Trading parameters ───────────────────────────────────────────────────────
 PAPER_TRADING           = True
-CAPITAL                 = 200_000
+CAPITAL                 = 20_000_000
 MAX_POSITIONS           = 10              # raised for paper trading (was 5)
 MAX_SECTOR_EXPOSURE     = 0.30
 RISK_PER_TRADE_PCT      = 0.01            # 1% of capital per trade
+MAX_POSITION_VALUE_PCT  = 0.20            # max 20% of capital per trade (₹40,000)
 TARGET_R1               = 1.0            # TP1 — exit 50% here
 TARGET_R2               = 2.0            # TP2 — exit remaining 50% here
 SCAN_INTERVAL_MIN       = 3              # scan every 3 minutes (was 5)

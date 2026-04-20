@@ -24,15 +24,15 @@ def _get_state() -> TradeStateManager:
 # ─── Color helpers ─────────────────────────────────────────────────────────────
 
 def _win_color(win_rate: float) -> str:
-    if win_rate >= 65: return "#00C853"
-    if win_rate >= 50: return "#FFD600"
-    return "#F44336"
+    if win_rate >= 65: return "rgba(0,200,83,0.25)"
+    if win_rate >= 50: return "rgba(255,214,0,0.25)"
+    return "rgba(244,67,54,0.25)"
 
 
 def _r_color(avg_r: float) -> str:
-    if avg_r > 0.5:  return "#00C853"
-    if avg_r >= 0:   return "#FFD600"
-    return "#F44336"
+    if avg_r > 0.5:  return "rgba(0,200,83,0.25)"
+    if avg_r >= 0:   return "rgba(255,214,0,0.25)"
+    return "rgba(244,67,54,0.25)"
 
 
 # ─── Main render ──────────────────────────────────────────────────────────────
@@ -102,8 +102,8 @@ def render_learning_tab():
                 fill_color=[
                     ["#2A2A2A"] * len(df_setup),
                     ["#2A2A2A"] * len(df_setup),
-                    [_win_color(w) + "44" for w in df_setup["Win Rate"]],
-                    [_r_color(r) + "44" for r in df_setup["Avg R"]],
+                    [_win_color(w) for w in df_setup["Win Rate"]],
+                    [_r_color(r) for r in df_setup["Avg R"]],
                     ["#2A2A2A"] * len(df_setup),
                 ],
                 font=dict(color="white", size=12),

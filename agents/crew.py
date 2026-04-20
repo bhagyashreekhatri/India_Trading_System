@@ -16,8 +16,11 @@ Run: TradingCrew().run_tick()
 """
 import json
 from math import floor
+from pathlib import Path
 from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
+
+STATUS_FILE = Path("./system_status.json")
 
 from data.kite_client import KiteDataClient
 from data.news_client import NewsClient
@@ -41,7 +44,7 @@ from tools.telegram_tools import (
 from config.universe import FULL_UNIVERSE, get_sector
 from config.settings import (
     CAPITAL, RISK_PER_TRADE_PCT, MAX_POSITIONS, MAX_SAME_SECTOR_POSITIONS,
-    MAX_CONSECUTIVE_LOSSES, CONSERVATIVE_SIZE_PCT,
+    MAX_CONSECUTIVE_LOSSES, CONSERVATIVE_SIZE_PCT, MAX_POSITION_VALUE_PCT,
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
     BREADTH_BULLISH, BREADTH_BEARISH,
@@ -425,6 +428,21 @@ class TradingCrew:
             min_score = max(min_score, MIN_SCORE_ENTRY_CONSERVATIVE)
             print(f"[Scorer] Conservative mode — {consec} consecutive losses, threshold={min_score}")
 
+        # Write effective threshold to status file so dashboard can display it
+        conservative = consec >= MAX_CONSECUTIVE_LOSSES or self._is_midday()
+        try:
+            STATUS_FILE.write_text(json.dumps({
+                "effective_threshold": round(min_score, 1),
+                "conservative_mode":   conservative,
+                "consecutive_losses":  consec,
+                "midday_mode":         self._is_midday(),
+                "regime":              regime_data.get("regime", "unknown"),
+                "breadth_label":       breadth_data.get("breadth_label", "NEUTRAL"),
+                "last_tick":           _now_ist().strftime("%H:%M:%S"),
+            }, indent=2))
+        except Exception:
+            pass
+
         for s in setups:
             sym = s["symbol"]
             try:
@@ -581,6 +599,10 @@ class TradingCrew:
             multiplier   = CONSERVATIVE_SIZE_PCT if conservative else 1.0
             risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier
             qty          = floor(risk_amount / dist)
+            # Cap 1: max 20% of capital per position (prevents 1 trade using all capital)
+            max_pos_val  = CAPITAL * MAX_POSITION_VALUE_PCT
+            qty          = min(qty, floor(max_pos_val / s["entry_price"]))
+            # Cap 2: can't exceed available capital
             qty          = min(qty, floor(self.state.get_available_capital() / s["entry_price"]))
             qty          = max(0, qty)
 

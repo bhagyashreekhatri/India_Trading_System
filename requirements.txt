@@ -24,6 +24,7 @@ newsapi-python==0.2.7
 # Dashboard
 streamlit==1.31.1
 plotly==5.18.0
+streamlit-autorefresh==1.0.1
 
 # Storage
 sqlalchemy==2.0.30

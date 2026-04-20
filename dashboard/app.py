@@ -184,6 +184,37 @@ with st.sidebar:
     if kill_switch:
         st.error("🛑 KILL SWITCH ON — no new entries")
 
+    # ── Effective threshold display (reads what the engine is actually using) ──
+    status_file = Path("./system_status.json")
+    if status_file.exists():
+        try:
+            with open(status_file) as f:
+                sys_status = json.load(f)
+            eff_thresh  = sys_status.get("effective_threshold", score_threshold)
+            consec      = sys_status.get("consecutive_losses", 0)
+            is_midday   = sys_status.get("midday_mode", False)
+            is_conserv  = sys_status.get("conservative_mode", False)
+            last_tick   = sys_status.get("last_tick", "—")
+            regime_lbl  = sys_status.get("regime", "—").upper()
+
+            if is_conserv and eff_thresh > score_threshold:
+                # Engine is overriding the slider — warn the user
+                reason = "midday lull" if is_midday and consec < 3 else f"{consec} consec losses"
+                st.warning(
+                    f"⚠️ Engine using **{eff_thresh}** (not {score_threshold})\n"
+                    f"Reason: {reason}"
+                )
+            else:
+                st.success(f"✅ Threshold active: **{eff_thresh}**")
+
+            st.caption(
+                f"Regime: {regime_lbl}  •  "
+                f"Last tick: {last_tick}  •  "
+                f"Streak: {consec} loss(es)"
+            )
+        except Exception:
+            pass
+
     st.divider()
 
     # ── Capital bar ───────────────────────────────────────────────────────────
@@ -192,8 +223,9 @@ with st.sidebar:
     st.progress(min(deployed_pct / 100, 1.0),
                 text=f"{deployed_pct:.1f}% deployed")
     st.caption(
-        f"₹{state.get_deployed_capital():,.0f} in use\n"
-        f"₹{state.get_available_capital():,.0f} free"
+        f"Total:  ₹{CAPITAL:,.0f}\n"
+        f"In use: ₹{state.get_deployed_capital():,.0f}\n"
+        f"Free:   ₹{state.get_available_capital():,.0f}"
     )
 
     st.divider()
@@ -235,9 +267,22 @@ with tab3:
 
 
 # ── Auto-refresh ──────────────────────────────────────────────────────────────
+# Try the proper package first; if not installed fall back to a JS meta-refresh
+_refreshed = False
 try:
     from streamlit_autorefresh import st_autorefresh
     st_autorefresh(interval=10_000, key="dashboard_refresh")
+    _refreshed = True
 except ImportError:
-    # Fallback: manual refresh button handles it
     pass
+
+if not _refreshed:
+    # JS fallback: reloads the page every 10 seconds without any extra package
+    st.markdown(
+        """
+        <script>
+            setTimeout(function() { window.location.reload(); }, 10000);
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
