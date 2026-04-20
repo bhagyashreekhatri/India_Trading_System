@@ -306,21 +306,46 @@ class TradingCrew:
 
     def _detect_setups(self, active: list[str]) -> list[dict]:
         print(f"[Setup] Detecting setups in {len(active)} stocks...")
-        setups = []
+        setups       = []
+        no_data      = 0
+        few_candles  = 0
+        below_vwap_count = 0
+        weak_body    = 0
+
         for sym in active:
             try:
                 df, vwap = self.kite.get_vwap_with_candles(sym)
+                if df is None:
+                    no_data += 1
+                    continue
+                if len(df) < 8:
+                    few_candles += 1
+                    continue
+
                 quotes   = self.kite.get_quotes([sym])
                 curr     = quotes.get(sym, {}).get("last_price", 0.0)
-                result   = _detect_all_setups(df, vwap, curr, sym)
+
+                # Quick diagnostic: count common blockers
+                last = df.iloc[-1]
+                br   = abs(last["close"] - last["open"]) / (last["high"] - last["low"]) \
+                       if (last["high"] - last["low"]) > 0 else 0
+                if last["close"] < vwap:
+                    below_vwap_count += 1
+                if br < 0.4:
+                    weak_body += 1
+
+                result = _detect_all_setups(df, vwap, curr, sym)
                 if result:
                     setups.append(result)
-            except Exception as e:
-                # Silently skip individual stocks
+            except Exception:
                 continue
 
         setups.sort(key=lambda x: x.get("candle_quality", 0), reverse=True)
-        print(f"[Setup] Found {len(setups)} setups")
+        print(
+            f"[Setup] Found {len(setups)} setups | "
+            f"no_data={no_data} few_candles={few_candles} | "
+            f"below_vwap={below_vwap_count} weak_body={weak_body} (of {len(active)})"
+        )
         return setups
 
     # ── Agent 5+6: Volume + RS + News ────────────────────────────────────────
