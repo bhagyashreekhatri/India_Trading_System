@@ -184,36 +184,59 @@ with st.sidebar:
     if kill_switch:
         st.error("🛑 KILL SWITCH ON — no new entries")
 
-    # ── Effective threshold display (reads what the engine is actually using) ──
-    status_file = Path("./system_status.json")
+    # ── Effective threshold display ───────────────────────────────────────────
+    # The slider value IS what the engine will use — show it as confirmed.
+    # Only show an override warning if system_status.json is FRESH (from today,
+    # written within the last 15 min) AND the engine raised the threshold above
+    # what the slider says (conservative mode / midday lull).
+    status_file  = Path("./system_status.json")
+    today_str    = now.strftime("%H")          # hour — used to check freshness
+    consec       = 0
+    regime_lbl   = "—"
+    last_tick_str = "—"
+    override_active = False
+
     if status_file.exists():
         try:
             with open(status_file) as f:
                 sys_status = json.load(f)
-            eff_thresh  = sys_status.get("effective_threshold", score_threshold)
-            consec      = sys_status.get("consecutive_losses", 0)
-            is_midday   = sys_status.get("midday_mode", False)
-            is_conserv  = sys_status.get("conservative_mode", False)
-            last_tick   = sys_status.get("last_tick", "—")
-            regime_lbl  = sys_status.get("regime", "—").upper()
 
-            if is_conserv and eff_thresh > score_threshold:
-                # Engine is overriding the slider — warn the user
-                reason = "midday lull" if is_midday and consec < 3 else f"{consec} consec losses"
+            eff_thresh   = sys_status.get("effective_threshold", score_threshold)
+            consec       = sys_status.get("consecutive_losses", 0)
+            is_midday    = sys_status.get("midday_mode", False)
+            last_tick_str = sys_status.get("last_tick", "—")
+            regime_lbl   = sys_status.get("regime", "—").upper()
+
+            # Check freshness: status file must have been written today
+            # (last_tick is "HH:MM:SS" — if market was running today the file is fresh)
+            file_mtime = status_file.stat().st_mtime
+            file_age_min = (datetime.now(IST).timestamp() - file_mtime) / 60
+
+            status_is_fresh = file_age_min < 15   # written within last 15 min
+
+            if status_is_fresh and eff_thresh > score_threshold:
+                # Engine is actively overriding the slider — warn user
+                reason = "midday lull" if is_midday and consec < 3 \
+                         else f"{consec} consecutive losses"
                 st.warning(
-                    f"⚠️ Engine using **{eff_thresh}** (not {score_threshold})\n"
+                    f"⚠️ Engine overriding to **{eff_thresh}** "
+                    f"(your slider: {score_threshold})\n"
                     f"Reason: {reason}"
                 )
-            else:
-                st.success(f"✅ Threshold active: **{eff_thresh}**")
-
-            st.caption(
-                f"Regime: {regime_lbl}  •  "
-                f"Last tick: {last_tick}  •  "
-                f"Streak: {consec} loss(es)"
-            )
+                override_active = True
         except Exception:
             pass
+
+    if not override_active:
+        # Slider value is what the engine uses — confirm it clearly
+        st.success(f"✅ Threshold active: **{score_threshold}**")
+
+    if last_tick_str != "—":
+        st.caption(
+            f"Regime: {regime_lbl}  •  "
+            f"Last tick: {last_tick_str}  •  "
+            f"Streak: {consec} loss(es)"
+        )
 
     st.divider()
 

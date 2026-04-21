@@ -116,6 +116,8 @@ class TradingCrew:
         self._regime_cache:  dict = {}
         self._breadth_tick   = -99
         self._regime_tick    = -99
+        # Clear yesterday's watchlist so dashboard shows only today's signals
+        self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
         alert_system_start()
 

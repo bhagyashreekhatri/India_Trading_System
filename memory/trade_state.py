@@ -224,13 +224,24 @@ class TradeStateManager:
             conn.execute("DELETE FROM watchlist")
 
     def get_watchlist(self) -> List[WatchlistItem]:
+        """Return only today's watchlist items — stale entries from previous days are ignored."""
+        today = date.today().isoformat()
         with self._conn() as conn:
-            rows = conn.execute("SELECT * FROM watchlist ORDER BY score DESC").fetchall()
+            rows = conn.execute(
+                "SELECT * FROM watchlist WHERE added_at LIKE ? ORDER BY score DESC",
+                (f"{today}%",)
+            ).fetchall()
         return [WatchlistItem(symbol=r["symbol"],setup_type=r["setup_type"],
                               score=r["score"],entry_price=r["entry_price"],
                               stop_loss=r["stop_loss"],tp1_price=r["tp1_price"],
                               tp2_price=r["tp2_price"],reason=r["reason"],
                               added_at=r["added_at"]) for r in rows]
+
+    def clear_old_watchlist(self):
+        """Delete watchlist entries older than today. Call at startup."""
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            conn.execute("DELETE FROM watchlist WHERE added_at NOT LIKE ?", (f"{today}%",))
 
     def get_today_trades(self) -> List[Position]:
         today = date.today().isoformat()
