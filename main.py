@@ -123,7 +123,10 @@ def is_market_open() -> bool:
     if now.weekday() >= 5:         # Saturday or Sunday
         return False
     t = now.time()
-    return _parse(MARKET_OPEN) <= t <= _parse(EOD_CLOSE_TIME)
+    # Run until true market close (15:30) so _manage_positions() can force-close
+    # all positions at EOD_CLOSE_TIME (15:00). Previously used EOD_CLOSE_TIME here
+    # which meant run_tick() stopped at 15:00 and positions were never closed.
+    return _parse(MARKET_OPEN) <= t <= _parse(MARKET_CLOSE)
 
 
 def is_pre_market() -> bool:
