@@ -51,7 +51,7 @@ from config.settings import (
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
-    PROXIMITY_MAX_PCT,
+    PROXIMITY_MAX_PCT, DAILY_LOSS_KILL_PCT,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -61,6 +61,31 @@ IST = ZoneInfo(TIMEZONE)
 
 def _now_ist() -> datetime:
     return datetime.now(IST)
+
+
+def _entry_dt_aware(entry_time: str) -> datetime:
+    """
+    Convert a stored entry_time ISO string into a TZ-aware IST datetime.
+
+    Why this exists: state.open_position() historically wrote
+    datetime.now().isoformat() with no tzinfo. The wall-clock value depends on
+    the host TZ — UTC on a default DigitalOcean droplet, IST on a Mac. Earlier
+    code did `entry_dt.replace(tzinfo=IST)` which silently mislabels UTC values
+    as IST, adding 5h30 to apparent age and tripping the 45-min stall threshold
+    on the first tick.
+
+    Handles both legacy naive ISO and new aware ISO transparently:
+      - aware  → just astimezone(IST)
+      - naive  → attach host's local tz (from time.localtime), then convert
+    """
+    import time as _t
+    from datetime import timezone, timedelta
+    parsed = datetime.fromisoformat(entry_time)
+    if parsed.tzinfo is not None:
+        return parsed.astimezone(IST)
+    host_offset_sec = _t.localtime().tm_gmtoff
+    host_tz = timezone(timedelta(seconds=host_offset_sec))
+    return parsed.replace(tzinfo=host_tz).astimezone(IST)
 
 
 def _parse_time(t: str) -> dtime:
@@ -569,6 +594,35 @@ class TradingCrew:
         open_pos = self.state.get_open_positions()
         consec   = self.state.get_consecutive_losses()
 
+        # ── Daily-loss kill switch ───────────────────────────────────────────
+        # Hard floor: if today_pnl drops below -DAILY_LOSS_KILL_PCT × CAPITAL,
+        # block ALL new entries for the rest of the session. Existing positions
+        # continue to be managed (SL/TP/trail/EOD). Auto-resets at next session.
+        today_pnl    = self.state.get_today_pnl()
+        kill_floor   = -CAPITAL * DAILY_LOSS_KILL_PCT
+        if today_pnl <= kill_floor:
+            print(f"[Allocator] 🛑 DAILY-LOSS KILL SWITCH — "
+                  f"today P&L ₹{today_pnl:+,.0f} ≤ floor ₹{kill_floor:+,.0f} "
+                  f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"Blocking new entries for rest of session.")
+            # Telegram alert (idempotent — once-per-session)
+            if not getattr(self, "_kill_switch_alerted_today", False):
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🛑 <b>DAILY-LOSS KILL SWITCH ACTIVATED</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📉 Today P&L: ₹{today_pnl:+,.0f}\n"
+                        f"🚫 Floor: ₹{kill_floor:+,.0f} "
+                        f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,})\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"No new entries today. Open positions still managed."
+                    )
+                except Exception:
+                    pass
+                self._kill_switch_alerted_today = True
+            return
+
         for s in scored:
             sym    = s["symbol"]
             sector = s.get("sector", get_sector(sym))
@@ -681,10 +735,11 @@ class TradingCrew:
     def _manage_positions(self):
         """
         For every open position:
-          • Hit SL → full exit (closed_loss)
+          • Position is from a prior session → force-close (overnight veto)
+          • Hit SL → full exit (initial = sl_hit, post-trail = sl_trail_hit)
           • Hit TP1 → 50% exit, SL → breakeven, start trailing
           • Hit TP2 (or tp1+trailing hit) → full exit (closed_win)
-          • Stalled (>20 min, <0.2R move) → close
+          • Stalled (>45 min, <0.15R move) → close
           • EOD at 15:00 → close all
         """
         open_pos = self.state.get_open_positions()
@@ -702,17 +757,42 @@ class TradingCrew:
         except Exception:
             quotes = {}
 
+        today_ist = now.date()
+
         for p in open_pos:
             curr = quotes.get(p.symbol, {}).get("last_price", p.entry_price)
+
+            # ── Overnight veto ────────────────────────────────────────────────
+            # Any position with entry_time on a prior session must NEVER survive
+            # into today. Root cause of the ASIANPAINT 19.85h paper hold:
+            # 15:00 EOD force-close didn't fire on 2026-04-20. Belt-and-braces:
+            # at every tick, if a position's entry date != today (IST), close it
+            # immediately at LTP and tag as overnight_exit.
+            if p.entry_time:
+                try:
+                    entry_dt_ist = _entry_dt_aware(p.entry_time)
+                    if entry_dt_ist.date() != today_ist:
+                        print(f"[PosMgr] ⚠ OVERNIGHT VETO {p.symbol} — "
+                              f"entered {entry_dt_ist.date()}, today is {today_ist}")
+                        self._full_exit(p, curr, "overnight_exit")
+                        continue
+                except Exception:
+                    pass
 
             # ── EOD: close everything ──────────────────────────────────────────
             if now.time() >= eod:
                 self._full_exit(p, curr, "eod_exit")
                 continue
 
-            # ── SL hit ────────────────────────────────────────────────────────
+            # ── SL hit (distinguish initial from trailed) ────────────────────
             if curr <= p.stop_loss:
-                self._full_exit(p, curr, "sl_hit")
+                # If stop has been moved above initial_sl, it's a trailing exit
+                # (price ran in our favour, we tightened, then it pulled back).
+                # That should NOT be analytics-classified as a loss like an
+                # initial-SL hit; the P&L is often positive.
+                trailed = p.tp1_hit or (p.initial_sl and p.stop_loss > p.initial_sl + 1e-6)
+                reason = "sl_trail_hit" if trailed else "sl_hit"
+                self._full_exit(p, curr, reason)
                 continue
 
             # ── TP2 hit (after TP1 already taken) ─────────────────────────────
@@ -736,8 +816,12 @@ class TradingCrew:
             # Threshold 0.15R: only exit if truly stuck, not just slow.
             if not p.tp1_hit and p.entry_time:
                 try:
-                    entry_dt = datetime.fromisoformat(p.entry_time)
-                    elapsed  = (now - entry_dt.replace(tzinfo=IST)).total_seconds() / 60
+                    # entry_time is stored naive by datetime.now().isoformat() in
+                    # state.open_position(). On a UTC-host server this is UTC; on
+                    # an IST-host server it's IST. Use _entry_dt_aware() to detect
+                    # and normalise to IST so elapsed math is correct on either host.
+                    entry_dt = _entry_dt_aware(p.entry_time)
+                    elapsed  = (now - entry_dt).total_seconds() / 60
                     sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
                     pnl_r    = (curr - p.entry_price) / sl_dist if p.direction == "long" \
                                else (p.entry_price - curr) / sl_dist

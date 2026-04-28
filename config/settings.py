@@ -63,6 +63,11 @@ BREADTH_SAMPLE_SIZE     = 50             # stocks sampled for breadth score
 MAX_CONSECUTIVE_LOSSES  = 3              # after 3 losses → go conservative
 CONSERVATIVE_SIZE_PCT   = 0.50          # reduce position size by 50%
 
+# ─── Daily-loss kill switch ──────────────────────────────────────────────────
+DAILY_LOSS_KILL_PCT     = 0.025          # 2.5% of CAPITAL → freeze new entries for the day
+                                         # Existing positions still managed (SL/TP/trail).
+                                         # Auto-resets at next session boot.
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 
