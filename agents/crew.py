@@ -739,6 +739,16 @@ class TradingCrew:
             tx = "BUY" if s.get("direction", "long") == "long" else "SELL"
             self.kite.place_order(sym, tx, qty)
 
+            # Broker-side SL-M (Fix #6) — opposite side, trigger at the stop
+            sl_tx = "SELL" if s.get("direction", "long") == "long" else "BUY"
+            sl_oid = self.kite.place_sl_order(
+                symbol=sym, transaction=sl_tx, quantity=qty,
+                trigger=s["stop_loss"], price=s["stop_loss"],
+            )
+            if sl_oid:
+                self.state.update_sl_order_id(pos_id, sl_oid)
+                print(f"[Allocator] 🛑 SL-M placed {sym} trigger={s['stop_loss']} id={sl_oid}")
+
             # Telegram entry alert
             try:
                 alert_trade_entry(
@@ -877,7 +887,7 @@ class TradingCrew:
                   f"tp1_hit={p.tp1_hit}")
 
     def _partial_exit_tp1(self, p, curr: float):
-        """Exit 50% at TP1. Move SL to breakeven. Telegram alert."""
+        """Exit 50% at TP1. Move SL to breakeven (broker-side SL-M replaced)."""
         from math import floor
         qty_exit      = floor(p.quantity_remaining / 2)
         qty_remaining = p.quantity_remaining - qty_exit
@@ -892,6 +902,18 @@ class TradingCrew:
 
         tx = "SELL" if p.direction == "long" else "BUY"
         self.kite.place_order(p.symbol, tx, qty_exit)
+
+        # Replace broker-side SL-M: cancel old (was on full qty at initial_sl),
+        # place new on remaining qty at breakeven (Fix #6).
+        if getattr(p, "sl_order_id", ""):
+            self.kite.cancel_order(p.sl_order_id)
+        sl_tx = "SELL" if p.direction == "long" else "BUY"
+        new_sl_oid = self.kite.place_sl_order(
+            symbol=p.symbol, transaction=sl_tx, quantity=qty_remaining,
+            trigger=new_sl, price=new_sl,
+        )
+        if new_sl_oid:
+            self.state.update_sl_order_id(p.id, new_sl_oid)
 
         print(f"[PosMgr] 🎯 TP1 HIT {p.symbol} — exited {qty_exit} @ {curr:.2f} "
               f"partial_pnl=₹{partial_pnl:+,.0f} | SL→breakeven {new_sl:.2f}")
@@ -909,7 +931,7 @@ class TradingCrew:
             pass
 
     def _try_trail_sl(self, p, curr: float):
-        """Trail SL using ATR after TP1 hit."""
+        """Trail SL using ATR after TP1 hit. Replaces broker-side SL-M (Fix #6)."""
         try:
             df, _ = self.kite.get_vwap_with_candles(p.symbol)
             if df is None:
@@ -919,6 +941,17 @@ class TradingCrew:
 
             if new_sl > p.stop_loss:
                 self.state.update_stop_loss(p.id, new_sl)
+                # Replace broker-side SL-M to track the trail
+                if getattr(p, "sl_order_id", ""):
+                    self.kite.cancel_order(p.sl_order_id)
+                sl_tx = "SELL" if p.direction == "long" else "BUY"
+                new_oid = self.kite.place_sl_order(
+                    symbol=p.symbol, transaction=sl_tx,
+                    quantity=p.quantity_remaining,
+                    trigger=new_sl, price=new_sl,
+                )
+                if new_oid:
+                    self.state.update_sl_order_id(p.id, new_oid)
                 print(f"[PosMgr] 🔄 Trail SL {p.symbol}: "
                       f"{p.stop_loss:.2f} → {new_sl:.2f} (ATR={atr:.2f})")
                 try:
@@ -929,7 +962,7 @@ class TradingCrew:
             pass
 
     def _full_exit(self, p, curr: float, reason: str):
-        """Close full remaining position. Telegram exit alert."""
+        """Close full remaining position. Cancel SL-M first to avoid double sell."""
         qty      = p.quantity_remaining
         sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
 
@@ -944,6 +977,16 @@ class TradingCrew:
 
         status = "closed_win" if total_pnl > 0 else "closed_loss"
         self.state.close_position(p.id, curr, total_pnl, pnl_r, status, reason)
+
+        # Cancel any pending broker-side SL-M before placing the MARKET exit
+        # (Fix #6) — prevents the "polling sees SL hit + broker SL-M also fires"
+        # double-sell race in live mode. Safe no-op in paper.
+        if getattr(p, "sl_order_id", "") and reason not in ("sl_hit", "sl_trail_hit"):
+            self.kite.cancel_order(p.sl_order_id)
+        # If reason IS sl_hit/sl_trail_hit, the broker stop may have just filled;
+        # cancel is still attempted but failure is benign (already filled).
+        elif getattr(p, "sl_order_id", ""):
+            self.kite.cancel_order(p.sl_order_id)
 
         tx = "SELL" if p.direction == "long" else "BUY"
         self.kite.place_order(p.symbol, tx, qty)

@@ -6,12 +6,37 @@ import sqlite3
 import json
 from dataclasses import dataclass, field
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from config.settings import CAPITAL, RISK_PER_TRADE_PCT, TARGET_R1, TARGET_R2
 
-
+IST = ZoneInfo("Asia/Kolkata")
 DB_PATH = Path("./trade_state.db")
+
+
+def _now_iso_ist() -> str:
+    """IST-aware ISO timestamp. Use for all new writes to entry_time/exit_time."""
+    return datetime.now(IST).isoformat()
+
+
+def _to_ist(ts: str) -> Optional[datetime]:
+    """
+    Parse a stored ISO timestamp into a TZ-aware IST datetime.
+    Handles legacy naive ISO (UTC-host or IST-host) and new IST-aware ISO.
+    """
+    if not ts:
+        return None
+    try:
+        import time as _t
+        parsed = datetime.fromisoformat(ts)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(IST)
+        # Naive: assume host-local tz at the time of write
+        host_offset = _t.localtime().tm_gmtoff
+        return parsed.replace(tzinfo=timezone(timedelta(seconds=host_offset))).astimezone(IST)
+    except Exception:
+        return None
 
 
 @dataclass
@@ -51,6 +76,10 @@ class Position:
     exit_time:        str   = ""
     status:           str   = "open"
     exit_price:       Optional[float] = None
+
+    # Broker-side SL-M order id (Fix #6) — populated after entry, replaced on
+    # TP1/trail, cancelled on full exit. Paper trades store "PAPER_SL_*".
+    sl_order_id:      str   = ""
 
 
 @dataclass
@@ -147,6 +176,7 @@ class TradeStateManager:
                 "ALTER TABLE positions ADD COLUMN pnl_r             REAL     DEFAULT 0.0",
                 "ALTER TABLE positions ADD COLUMN exit_reason       TEXT     DEFAULT ''",
                 "ALTER TABLE positions ADD COLUMN entry_reason      TEXT     DEFAULT ''",
+                "ALTER TABLE positions ADD COLUMN sl_order_id       TEXT     DEFAULT ''",
             ]
             for sql in _migrations:
                 try:
@@ -158,7 +188,7 @@ class TradeStateManager:
                       entry_price, stop_loss, tp1_price, tp2_price, quantity,
                       entry_reason="", score_breakdown=None, direction="long",
                       sector="UNKNOWN") -> int:
-        now = datetime.now().isoformat()
+        now = _now_iso_ist()
         bd  = json.dumps(score_breakdown or {})
         with self._conn() as conn:
             # Ensure sector column exists (may not in older DBs)
@@ -193,6 +223,11 @@ class TradeStateManager:
         with self._conn() as conn:
             conn.execute("UPDATE positions SET stop_loss=? WHERE id=?", (new_sl, position_id))
 
+    def update_sl_order_id(self, position_id: int, order_id: str):
+        """Persist the active broker-side SL-M order id (Fix #6)."""
+        with self._conn() as conn:
+            conn.execute("UPDATE positions SET sl_order_id=? WHERE id=?", (order_id or "", position_id))
+
     def mark_tp1_hit(self, position_id: int, qty_remaining: int, partial_pnl: float):
         with self._conn() as conn:
             conn.execute("""
@@ -201,7 +236,7 @@ class TradeStateManager:
             """, (qty_remaining, partial_pnl, position_id))
 
     def close_position(self, position_id, exit_price, pnl, pnl_r, status, exit_reason=""):
-        now = datetime.now().isoformat()
+        now = _now_iso_ist()
         with self._conn() as conn:
             conn.execute("""
                 UPDATE positions
@@ -340,7 +375,11 @@ class TradeStateManager:
         for t in closed:
             if not t.entry_time: continue
             try:
-                hour  = datetime.fromisoformat(t.entry_time).hour
+                # Convert to IST first — bucketing on raw .hour() of a naive
+                # UTC-host timestamp gives off-by-5h30 buckets.
+                ist_dt = _to_ist(t.entry_time)
+                if ist_dt is None: continue
+                hour  = ist_dt.hour
                 label = f"{hour:02d}:00"
                 if label not in result:
                     result[label] = {"total":0,"wins":0,"pnls":[]}
@@ -372,8 +411,11 @@ class TradeStateManager:
             """, (symbol,)).fetchone()
         if not row or not row["exit_time"]: return False
         try:
-            exit_dt = datetime.fromisoformat(row["exit_time"])
-            return (datetime.now() - exit_dt).total_seconds() / 60 < cooldown_minutes
+            # IST-aware on both sides to remain correct after the entry/exit
+            # write path is migrated to IST-aware ISO.
+            exit_dt = _to_ist(row["exit_time"])
+            if exit_dt is None: return False
+            return (datetime.now(IST) - exit_dt).total_seconds() / 60 < cooldown_minutes
         except Exception:
             return False
 
@@ -407,6 +449,11 @@ class TradeStateManager:
                   pnl, consec, pnl, pnl, today))
 
     def _row_to_position(self, row) -> Position:
+        # sl_order_id may not be in older rows — handle KeyError gracefully
+        try:
+            sl_oid = row["sl_order_id"] or ""
+        except (KeyError, IndexError):
+            sl_oid = ""
         return Position(
             id=row["id"], symbol=row["symbol"],
             setup_type=row["setup_type"] or "",
@@ -432,4 +479,5 @@ class TradeStateManager:
             exit_time=row["exit_time"] or "",
             status=row["status"] or "open",
             exit_price=row["exit_price"],
+            sl_order_id=sl_oid,
         )

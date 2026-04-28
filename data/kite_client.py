@@ -251,6 +251,29 @@ class KiteDataClient:
             print(f"[Kite] Order error: {e}")
             return None
 
+    def cancel_order(self, order_id: Optional[str]) -> bool:
+        """
+        Cancel a pending order (used to replace SL-M when stop is updated).
+        Paper: no-op (returns True). Live: calls Kite REGULAR cancel.
+        """
+        if not order_id:
+            return False
+        if PAPER_TRADING or order_id.startswith("PAPER_"):
+            print(f"[Kite PAPER] cancel {order_id}")
+            return True
+        try:
+            self.kite.cancel_order(
+                variety=KiteConnect.VARIETY_REGULAR,
+                order_id=order_id,
+            )
+            print(f"[Kite LIVE] cancelled {order_id}")
+            return True
+        except Exception as e:
+            # Most common cause: order already filled (broker stop fired).
+            # Caller treats this as benign and reconciles via position state.
+            print(f"[Kite] cancel failed for {order_id} (may already be filled): {e}")
+            return False
+
     def place_sl_order(
         self,
         symbol:     str,
