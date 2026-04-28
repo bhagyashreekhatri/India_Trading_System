@@ -17,11 +17,14 @@ from zoneinfo import ZoneInfo
 from langchain.tools import tool
 
 from data.kite_client import KiteDataClient
-from scoring.engine import SetupType, SignalDirection
+from scoring.engine import (
+    SetupType, SignalDirection,
+    _round_to_tick, _round_down_tick, _round_up_tick,
+)
 from config.universe import get_sector
 from config.settings import (
     ORB_MINUTES, ORB_MIN_RANGE_PCT, ORB_MAX_RANGE_PCT,
-    TARGET_R1, TARGET_R2, TIMEZONE,
+    TARGET_R1, TARGET_R2, TIMEZONE, TICK_SIZE,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -63,14 +66,16 @@ def _atr(df: pd.DataFrame, periods: int = 10) -> float:
 
 
 def _calc_tp(entry: float, sl: float, r: float) -> float:
-    """entry + (entry - sl) * R, rounded to 2dp."""
-    return round(entry + (entry - sl) * r, 2)
+    """entry + (entry - sl) * R, rounded UP to a valid NSE tick (Fix #7)."""
+    return _round_up_tick(entry + (entry - sl) * r, TICK_SIZE)
 
 
 def _sl_from_atr(entry: float, atr: float, min_pct: float = 0.007) -> float:
-    """SL = entry - max(ATR×0.8, entry×min_pct)."""
+    """SL = entry - max(ATR×0.8, entry×min_pct), rounded DOWN to a tick.
+    Rounding down for LONG stops gives the stop slightly more breathing
+    room — never tighter than intended (Fix #7)."""
     dist = max(atr * 0.8, entry * min_pct)
-    return round(entry - dist, 2)
+    return _round_down_tick(entry - dist, TICK_SIZE)
 
 
 def _make_signal(
@@ -85,14 +90,20 @@ def _make_signal(
     close_pos:  float,
     reason:     str,
 ) -> dict:
-    tp1 = _calc_tp(entry, sl, TARGET_R1)
-    tp2 = _calc_tp(entry, sl, TARGET_R2)
+    # Tick-align all four prices (Fix #7).
+    # Entry: nearest tick (we want to fill at signal level).
+    # SL: rounded DOWN for longs to give breathing room (never tighter).
+    # TP1/TP2: derived from tick-aligned entry+sl, then up-rounded by _calc_tp.
+    entry_t = _round_to_tick(entry, TICK_SIZE)
+    sl_t    = _round_down_tick(sl, TICK_SIZE)
+    tp1     = _calc_tp(entry_t, sl_t, TARGET_R1)
+    tp2     = _calc_tp(entry_t, sl_t, TARGET_R2)
     return {
         "symbol":           symbol,
         "setup_type":       setup_type,
         "direction":        direction,
-        "entry_price":      entry,
-        "stop_loss":        sl,
+        "entry_price":      entry_t,
+        "stop_loss":        sl_t,
         "tp1_price":        tp1,
         "tp2_price":        tp2,
         "target_price":     tp2,

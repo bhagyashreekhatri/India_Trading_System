@@ -31,6 +31,7 @@ from scoring.engine import (
     ScoringEngine, RawSignal, VolumeData, MarketContext,
     RelativeStrengthData, NewsData,
     SetupType, RegimeType, SignalDirection,
+    _round_to_tick, _round_down_tick, _round_up_tick,
 )
 
 from tools.pattern_tools import _detect_setups_multi
@@ -53,6 +54,7 @@ from config.settings import (
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
     PROXIMITY_MAX_PCT, DAILY_LOSS_KILL_PCT,
     CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
+    TICK_SIZE,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -96,7 +98,8 @@ def _parse_time(t: str) -> dtime:
 
 
 def _calc_tp(entry: float, sl: float, r: float) -> float:
-    return round(entry + (entry - sl) * r, 2)
+    """entry + (entry - sl) * R, tick-aligned (Fix #7)."""
+    return _round_up_tick(entry + (entry - sl) * r, TICK_SIZE)
 
 
 def _calc_atr_from_df(df) -> float:
@@ -937,7 +940,8 @@ class TradingCrew:
             if df is None:
                 return
             atr     = _calc_atr_from_df(df)
-            new_sl  = round(curr - atr * TRAILING_ATR_MULTIPLIER, 2)
+            # Trail stop rounded DOWN to a valid tick (Fix #7).
+            new_sl  = _round_down_tick(curr - atr * TRAILING_ATR_MULTIPLIER, TICK_SIZE)
 
             if new_sl > p.stop_loss:
                 self.state.update_stop_loss(p.id, new_sl)

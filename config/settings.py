@@ -83,6 +83,13 @@ CONFLUENCE_MULTIPLIER_3 = 1.25           # 3+ setups → +25% Raw
 # right liquidity signal for a scalper — ensures the trade can actually fill.
 SCAN_MIN_TURNOVER       = 5_000_000      # ₹50 lakh minimum on the day so far
 
+# ─── Tick size (Fix #7) ──────────────────────────────────────────────────────
+# NSE equity tick is ₹0.05 for stocks priced ≥ ₹1; sub-₹100 stocks may also use
+# ₹0.05 (the exchange has been migrating toward uniform 0.05). Live orders with
+# non-tick-aligned prices get rejected by Kite. Paper mode tolerates this; live
+# does not. Helper functions live in scoring/engine.py.
+TICK_SIZE               = 0.05
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 

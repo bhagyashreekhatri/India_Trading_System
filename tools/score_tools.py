@@ -9,7 +9,9 @@ from langchain.tools import tool
 from scoring.engine import (
     ScoringEngine, RawSignal, VolumeData, MarketContext,
     RelativeStrengthData, NewsData, SetupType, RegimeType, SignalDirection,
+    _round_up_tick,
 )
+from config.settings import TICK_SIZE
 from memory.trade_state import TradeStateManager, WatchlistItem
 from data.kite_client import KiteDataClient
 from config.universe import get_sector
@@ -39,7 +41,8 @@ def get_kite() -> KiteDataClient:
 
 
 def _calc_tp(entry: float, sl: float, r: float) -> float:
-    return round(entry + (entry - sl) * r, 2)
+    """entry + (entry - sl) * R, tick-aligned (Fix #7)."""
+    return _round_up_tick(entry + (entry - sl) * r, TICK_SIZE)
 
 
 def _calc_quantity(entry_price: float, stop_loss: float, conservative: bool = False) -> int:
