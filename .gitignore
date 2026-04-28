@@ -47,3 +47,5 @@ logs/
 
 # ── System controls (runtime file, not source) ───────────────────────────────
 system_controls.json
+system_status.json
+news_cache.json
