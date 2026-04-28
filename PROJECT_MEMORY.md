@@ -1,5 +1,73 @@
 # NSE Trading System — Project Memory
-*Last updated: April 2026 | Phase 2 COMPLETE*
+*Last updated: 2026-04-28 | Phase 2 COMPLETE | Hardening fixes 1–7 deployed*
+
+---
+
+## ✅ Fixes deployed 2026-04-28 (read before writing code)
+
+| # | Fix | Files | Verified by |
+|---|---|---|---|
+| 1 | **Stall-bug TZ correction** — `_entry_dt_aware` auto-detects host TZ; `entry_time` now written IST-aware via `_now_iso_ist()`; `is_in_cooldown` + `get_win_rate_by_hour` IST-corrected | `agents/crew.py`, `memory/trade_state.py` | sandbox UTC sim: 5-min entry reads as 5 min (was 335) |
+| 2 | **Score calibration** — news baseline 0.5 → 0.0; RECOVERING regime mults: recovery_setup 1.3→1.0, momentum_breakout 1.0→1.1, failed_breakdown 1.1→0.8 | `scoring/engine.py` | replay on 151 trades: A WR 70%, A+ WR 76.5%, calibration monotonic |
+| 3 | **Operational guards** — overnight veto (force-close any prior-session position), daily-loss kill switch (-2.5% of CAPITAL → freeze entries), `sl_hit` vs `sl_trail_hit` distinction | `agents/crew.py`, `config/settings.py` | targeted sim of all three guards |
+| 4 | **Groq hardening** — typed retries (RateLimitError honours Retry-After, APITimeout/Connection backoff), `response_format=json_object`, `timeout=10s`, persistent disk cache `news_cache.json`, telemetry counters | `data/news_client.py` | mocked 6-path test (success/429-retry/4×429/JSONErr/BadReq/cache-restart) |
+| 5 | **Multi-setup + confluence + turnover scanner** — `_detect_setups_multi` returns all matches; `confluence_count` tagged; multipliers x1.15/x1.25; scanner uses `turnover ≥ ₹50L` not raw shares | `tools/pattern_tools.py`, `agents/crew.py`, `config/settings.py` | 3 setups fired together on synthetic strong breakout |
+| 6 | **Broker-side SL-M orders** — placed on entry, cancelled+replaced on TP1 / trail, cancelled before full exit; `sl_order_id` column on Position | `data/kite_client.py`, `memory/trade_state.py`, `agents/crew.py` | syntax + 10/10 engine tests |
+| 7 | **Tick-size rounding (₹0.05)** — `_round_to_tick`/`_round_down_tick`/`_round_up_tick` in engine; applied in `_make_signal` (entry/SL/TP1/TP2), `_calc_tp` (both), trail SL | `scoring/engine.py`, `tools/pattern_tools.py`, `tools/score_tools.py`, `agents/crew.py`, `config/settings.py` | rounding cases verified |
+
+**Constants added to `config/settings.py`:**
+`DAILY_LOSS_KILL_PCT=0.025`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`.
+
+**Schema additions on `positions`:** `sl_order_id TEXT DEFAULT ''`.
+
+**New runtime files:** `news_cache.json` (persistent Groq cache; in `.gitignore`).
+
+**Helpers in `agents/crew.py`:** `_entry_dt_aware`, kill-switch block at top of `_allocate`, overnight-veto block at top of `_manage_positions`, multi-setup integration in `_detect_setups`, confluence multiplier in `_score_signals`, SL-M place/cancel/replace plumbing throughout.
+
+**Helpers in `memory/trade_state.py`:** `_now_iso_ist`, `_to_ist`, `update_sl_order_id`. `Position` dataclass has `sl_order_id` field.
+
+**Behaviour to expect post-deploy:**
+- `stalled_no_movement` exits should drop from 71 % → < 25 %.
+- A++ count should fall sharply (calibration tightened); A WR should hold ~70 %.
+- Logs show `⚡ CONFLUENCE x{n}` lines, `🛑 SL-M placed`, `🛑 DAILY-LOSS KILL SWITCH`, `⚠ OVERNIGHT VETO`.
+- `news_cache.json` present after first session; reload logged on restart.
+- All generated prices are multiples of ₹0.05.
+
+
+
+---
+
+## ⚡ TOKEN DISCIPLINE — STRICT (Bhagya's rule)
+```
+Opus 4.7 burns tokens fast. Every Claude session must:
+- Be concise. No preamble. No "Here's what I'll do" intros.
+- Use Edit (not Write) when modifying files. Read only the lines needed.
+- Batch related tool calls in one message — avoid round-trip confirmations.
+- Short prose in chat replies. No verbose markdown unless creating a deliverable doc.
+- Never re-read files already read in the same session.
+- Status updates: 1–2 sentences max.
+- Long deliverables (.md docs, full code files): full content is fine — that's the work product.
+```
+
+## ⚡ Claude rules for every code change session
+```
+AFTER EVERY BUG FIX OR CODE CHANGE — always do these 3 things automatically:
+
+1. Commit + push (tell Bhagya to run from Mac terminal):
+   cd ~/Desktop/India_Trading_System
+   rm -f .git/HEAD.lock .git/index.lock   # clear locks if needed
+   git add <changed files>
+   git commit -m "fix: description"
+   git push origin main
+
+2. Deploy to server:
+   ssh root@168.144.101.223 "cd /root/india_trading && git reset --hard HEAD && git pull && systemctl restart trading-system && echo Done"
+
+3. Check live logs:
+   ssh root@168.144.101.223 "journalctl -u trading-system -f"
+
+Never just say "fix is done" — always provide all 3 commands at the end.
+```
 
 ---
 
@@ -156,6 +224,51 @@ main.py                  ✅ 3-min loop + premarket at 9:00
 
 ---
 
+## ✅ ~~Pending bug fixes~~ — DEPLOYED 2026-04-28 (kept for history)
+
+### Fix 1: Kite historical data retry logic — CODE ALREADY WRITTEN, NOT DEPLOYED
+```
+File: data/kite_client.py → get_candles()
+Problem: "Request failed (kt-common)" — Kite API overload, skips stock entirely
+Fix: Retry up to 3 times with 1s, 2s backoff — code already in local kite_client.py
+Status: NOT pushed to server yet (server was running during market hours)
+```
+
+### Fix 2: ORB + Gap analysis broken — get_historical_data() doesn't exist — CODE FIXED LOCALLY
+```
+File: tools/pattern_tools.py
+Problem: _get_orb_levels() and _gap_analysis() both call kite.get_historical_data()
+         which does NOT exist on KiteDataClient — actual method is get_candles()
+         Both fail silently (try/except returns None) → ORB never fires, premarket gaps always empty
+Fix: Already applied locally:
+  _get_orb_levels  line 118: get_historical_data(symbol, interval="minute", lookback_days=1)
+                           → get_candles(symbol, interval="minute", days=1)
+  _gap_analysis    line 251: get_historical_data(symbol, interval="day", lookback_days=3)
+                           → get_candles(symbol, interval="day", days=3)
+Status: Fixed in local tools/pattern_tools.py — NOT pushed to server yet
+```
+
+### Fix 3: HDFC delisted in SECTOR_LEADERS — CODE FIXED LOCALLY
+```
+File: config/settings.py
+Problem: SECTOR_LEADERS["FINANCIAL"] had "HDFC" — merged with HDFCBANK in July 2023, delisted.
+         Kite can't find instrument token → sector strength for FINANCIAL always silently fails.
+Fix: Replaced "HDFC" with "HDFCAMC" (HDFC Asset Management — active & liquid)
+Status: Fixed in local config/settings.py — NOT pushed to server yet
+```
+
+### EOD deploy command (all 3 fixes together):
+```bash
+cd ~/Desktop/India_Trading_System
+rm -f .git/HEAD.lock .git/index.lock
+git add data/kite_client.py tools/pattern_tools.py config/settings.py
+git commit -m "fix: kite retry logic + fix get_historical_data method name + replace delisted HDFC in sector leaders"
+git push origin main
+ssh root@168.144.101.223 "cd /root/india_trading && git reset --hard HEAD && git pull && systemctl restart trading-system && echo Done"
+```
+
+---
+
 ## Next week priorities 🔲
 
 ### #1 — Multi-setup confluence scoring ⭐ (Bhagya's idea)
@@ -219,14 +332,19 @@ After 50+ closed trades:
 
 ## Server deploy commands
 ```bash
-ssh root@168.144.101.223
-git reset --hard HEAD && git clean -fd
-git pull
-systemctl restart trading-system
+# Server: DigitalOcean 168.144.101.223 (root, password auth)
+# Project path on server: /root/india_trading   ← lowercase, NOT India_Trading_System
+# Venv: /root/india_trading/venv/bin/python
+# GitHub repo: https://github.com/bhagyashreekhatri/India_Trading_System
 
-# GitHub SSH key (if needed):
-# /root/.ssh/github_key (ed25519)
-# git config core.sshCommand = "ssh -i /root/.ssh/github_key"
+# Full one-liner deploy from Mac terminal:
+ssh root@168.144.101.223 "cd /root/india_trading && git reset --hard HEAD && git pull && systemctl restart trading-system && echo Done"
+
+# Check service:
+ssh root@168.144.101.223 "systemctl status trading-system"
+
+# Live logs:
+ssh root@168.144.101.223 "journalctl -u trading-system -f"
 ```
 
 ---
