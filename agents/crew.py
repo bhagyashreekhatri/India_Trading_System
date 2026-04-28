@@ -33,7 +33,7 @@ from scoring.engine import (
     SetupType, RegimeType, SignalDirection,
 )
 
-from tools.pattern_tools import _detect_all_setups
+from tools.pattern_tools import _detect_setups_multi
 from tools.volume_tools   import _compute_breadth, _compute_sector_strength
 from tools.telegram_tools import (
     alert_trade_entry, alert_tp1_hit, alert_trade_exit,
@@ -52,6 +52,7 @@ from config.settings import (
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
     PROXIMITY_MAX_PCT, DAILY_LOSS_KILL_PCT,
+    CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -229,20 +230,25 @@ class TradingCrew:
     def _scan_market(self) -> list[str]:
         print(f"[Scanner] Scanning {len(FULL_UNIVERSE)} stocks...")
         try:
-            # Batch fetch quotes for all 150 stocks
+            # Batch fetch quotes for all stocks (single round-trip)
             quotes = self.kite.get_quotes(FULL_UNIVERSE)
             active = []
             for sym, q in quotes.items():
-                chg = abs(q.get("change_pct", 0))
-                vol = q.get("volume", 0)
-                # Filter: meaningful move + some volume
-                if chg >= 0.3 and vol >= 10_000:
-                    active.append((sym, chg))
+                chg   = abs(q.get("change_pct", 0))
+                vol   = q.get("volume", 0)
+                price = q.get("last_price", 0)
+                turnover = price * vol   # ₹ traded today so far
+                # Filter: meaningful move + real liquidity
+                # (Fix #5: turnover-based, not raw share count — fixes the
+                # bug where ₹50 stocks and ₹5,000 stocks cleared the same gate)
+                if chg >= 0.3 and turnover >= SCAN_MIN_TURNOVER:
+                    active.append((sym, chg, turnover))
 
             # Sort by absolute change, take top 60
             active.sort(key=lambda x: x[1], reverse=True)
             result = [s[0] for s in active[:60]]
-            print(f"[Scanner] {len(result)} active stocks (of {len(FULL_UNIVERSE)} scanned)")
+            print(f"[Scanner] {len(result)} active stocks (of {len(FULL_UNIVERSE)} scanned, "
+                  f"turnover floor ₹{SCAN_MIN_TURNOVER/1e5:.0f}L)")
             return result
         except Exception as e:
             print(f"[Scanner] Error: {e} — using top 30 universe")
@@ -335,12 +341,19 @@ class TradingCrew:
     # ── Agent 4: Setup Detector ───────────────────────────────────────────────
 
     def _detect_setups(self, active: list[str]) -> list[dict]:
+        """
+        Returns the PRIMARY setup per active stock, with confluence_count and
+        confluence_setups attached so the scorer can apply the multiplier.
+        Multi-detect (Fix #5) — each stock now reveals all matching setups,
+        not just the first hit.
+        """
         print(f"[Setup] Detecting setups in {len(active)} stocks...")
         setups       = []
         no_data      = 0
         few_candles  = 0
         below_vwap_count = 0
         weak_body    = 0
+        confluence_n = 0   # count of stocks where 2+ setups fired
 
         for sym in active:
             try:
@@ -355,7 +368,6 @@ class TradingCrew:
                 quotes   = self.kite.get_quotes([sym])
                 curr     = quotes.get(sym, {}).get("last_price", 0.0)
 
-                # Quick diagnostic: count common blockers
                 last = df.iloc[-1]
                 br   = abs(last["close"] - last["open"]) / (last["high"] - last["low"]) \
                        if (last["high"] - last["low"]) > 0 else 0
@@ -364,15 +376,20 @@ class TradingCrew:
                 if br < 0.4:
                     weak_body += 1
 
-                result = _detect_all_setups(df, vwap, curr, sym)
-                if result:
-                    setups.append(result)
+                matches = _detect_setups_multi(df, vwap, curr, sym)
+                if matches:
+                    primary = matches[0]   # priority-highest match
+                    if primary.get("confluence_count", 1) >= 2:
+                        confluence_n += 1
+                        print(f"[Setup] ⚡ CONFLUENCE x{primary['confluence_count']} on {sym}: "
+                              f"{primary['confluence_setups']}")
+                    setups.append(primary)
             except Exception:
                 continue
 
         setups.sort(key=lambda x: x.get("candle_quality", 0), reverse=True)
         print(
-            f"[Setup] Found {len(setups)} setups | "
+            f"[Setup] Found {len(setups)} setups ({confluence_n} with confluence) | "
             f"no_data={no_data} few_candles={few_candles} | "
             f"below_vwap={below_vwap_count} weak_body={weak_body} (of {len(active)})"
         )
@@ -525,9 +542,31 @@ class TradingCrew:
                 result = self.engine.calculate(signal, volume, context, rs, news)
                 comp   = result.components
 
+                # ── Confluence multiplier (Fix #5) ───────────────────────────
+                # Apply BEFORE the per-setup floor and final_score cap. The
+                # engine's final_score is already raw × regime_multiplier; we
+                # additionally multiply for confluence and re-cap at 10.
+                conf_n = s.get("confluence_count", 1)
+                if conf_n >= 3:
+                    conf_mult = CONFLUENCE_MULTIPLIER_3
+                elif conf_n == 2:
+                    conf_mult = CONFLUENCE_MULTIPLIER_2
+                else:
+                    conf_mult = 1.0
+                if conf_mult > 1.0:
+                    boosted = round(min(10.0, comp.final_score * conf_mult), 2)
+                    comp.final_score = boosted
+                    # Refresh grade so dashboard / DB write are consistent
+                    from scoring.engine import Grade
+                    if boosted >= 9.0:   comp.grade = Grade.A_PLUS_PLUS
+                    elif boosted >= 8.0: comp.grade = Grade.A_PLUS
+                    elif boosted >= 7.0: comp.grade = Grade.A
+                    elif boosted >= 5.0: comp.grade = Grade.B
+                    else:                comp.grade = Grade.C
+
                 # Per-setup score overrides — raise bar for underperforming setups
                 SETUP_MIN_SCORES = {
-                    "failed_breakdown": 7.5,   # 20% win rate historically → needs stronger confirmation
+                    "failed_breakdown": 7.5,   # 33% WR in 151-trade dataset
                 }
                 setup_min    = SETUP_MIN_SCORES.get(s.get("setup_type", ""), 0)
                 effective_min = max(min_score, setup_min)
@@ -556,6 +595,8 @@ class TradingCrew:
                             "market_alignment": comp.market_alignment,
                             "relative_strength": comp.relative_strength,
                             "news_sentiment":   comp.news_sentiment,
+                            "confluence_count": s.get("confluence_count", 1),
+                            "confluence_mult":  conf_mult,
                         },
                         "rs_delta":    rs_delta,
                         "news_headline": headline,

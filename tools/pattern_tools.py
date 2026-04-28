@@ -291,79 +291,85 @@ def _gap_analysis(symbol: str) -> dict:
 
 # ─── Main setup detector ──────────────────────────────────────────────────────
 
-def _detect_all_setups(
+def _detect_setups_multi(
     df:      pd.DataFrame,
     vwap:    float,
     current: float,
     symbol:  str,
-) -> dict | None:
+) -> list[dict]:
     """
-    Try all setup types in priority order.
-    Returns first (best) match or None.
+    Detect ALL setups that fire for the given bar — not just the first match.
+    Order in the returned list is priority-descending; same as the legacy
+    `_detect_all_setups` priority chain. The crew picks element [0] as the
+    primary signal and uses len(list) for confluence scoring.
+
+    Returns list of signal dicts; empty list if no setup detected.
     """
+    matches: list[dict] = []
+
     if df is None or len(df) < 8 or vwap is None:
-        return None
+        return matches
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
     br, cp = _candle_quality(last.to_dict())
     atr = _atr(df)
 
-    # ── 1. ORB breakout (highest priority early session) ─────────────────────
+    # ── 1. ORB breakout ──────────────────────────────────────────────────────
     orb = _detect_orb_breakout(symbol, df, current, atr)
     if orb:
-        return orb
+        matches.append(orb)
 
-    # ── 2. Failed Breakdown (reversal — high quality trap) ───────────────────
+    # ── 2. Failed Breakdown ──────────────────────────────────────────────────
     fb = _detect_failed_breakdown(df, vwap, current, symbol, atr)
     if fb:
-        return fb
+        matches.append(fb)
 
-    # ── 3. Recovery setup (was below VWAP, now reclaiming) ───────────────────
+    # ── 3. Recovery setup ────────────────────────────────────────────────────
     below = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] < vwap)
     if (below >= 3
             and last["close"] > vwap
             and last["close"] > last["open"]
             and br >= 0.5):
         sl = _sl_from_atr(last["close"], atr)
-        return _make_signal(symbol, SetupType.RECOVERY_SETUP, "long",
+        matches.append(_make_signal(symbol, SetupType.RECOVERY_SETUP, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Recovery: was below VWAP {below} candles, now reclaiming {vwap:.2f}")
+                            f"Recovery: was below VWAP {below} candles, now reclaiming {vwap:.2f}"))
 
-    # ── 4. VWAP Reclaim (single-bar reclaim after brief dip below) ───────────
+    # ── 4. VWAP Reclaim ──────────────────────────────────────────────────────
     if (prev["close"] < vwap
             and last["close"] > vwap
             and last["close"] > last["open"]
             and br >= 0.45):
         entry = round(vwap * 1.001, 2)
         sl    = _sl_from_atr(entry, atr)
-        return _make_signal(symbol, SetupType.VWAP_RECLAIM, "long",
+        matches.append(_make_signal(symbol, SetupType.VWAP_RECLAIM, "long",
                             entry, sl, atr, current, br, cp,
-                            f"VWAP reclaim at {vwap:.2f}")
+                            f"VWAP reclaim at {vwap:.2f}"))
 
-    # ── 5. VWAP Pullback (trend above VWAP, dipped to VWAP, bounced) ─────────
+    # ── 5. VWAP Pullback ─────────────────────────────────────────────────────
     above = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] > vwap)
     if (above >= 3
             and prev["low"] <= vwap * 1.002
             and last["close"] > vwap
             and br >= 0.4):
         sl = _sl_from_atr(round(last["close"], 2), atr)
-        return _make_signal(symbol, SetupType.VWAP_PULLBACK, "long",
+        matches.append(_make_signal(symbol, SetupType.VWAP_PULLBACK, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,
-                            f"VWAP pullback reclaim after {above} candles above VWAP")
+                            f"VWAP pullback reclaim after {above} candles above VWAP"))
 
-    # ── 6. Momentum Breakout (broke recent high above VWAP) ──────────────────
+    # ── 6. Momentum Breakout ─────────────────────────────────────────────────
     recent_high = float(df["high"].iloc[-7:-1].max())
     if (last["close"] > recent_high
             and last["close"] > vwap
             and br >= 0.4
             and cp >= 0.6):
         sl = _sl_from_atr(round(last["close"], 2), atr)
-        return _make_signal(symbol, SetupType.MOMENTUM_BREAKOUT, "long",
+        matches.append(_make_signal(symbol, SetupType.MOMENTUM_BREAKOUT, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Momentum breakout above recent high {recent_high:.2f} and VWAP")
+                            f"Momentum breakout above recent high {recent_high:.2f} and VWAP"))
 
-    # ── 7. Range Breakout (tight consolidation range broken) ─────────────────
+    # ── 7. Range Breakout ────────────────────────────────────────────────────
     rc      = df.iloc[-9:-1]
     rng_h   = float(rc["high"].max())
     rng_l   = float(rc["low"].min())
@@ -373,11 +379,31 @@ def _detect_all_setups(
             and last["close"] > vwap
             and br >= 0.4):
         sl = _sl_from_atr(round(last["close"], 2), atr)
-        return _make_signal(symbol, SetupType.RANGE_BREAKOUT, "long",
+        matches.append(_make_signal(symbol, SetupType.RANGE_BREAKOUT, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Range breakout: {rng_pct:.2f}% tight range, broke {rng_h:.2f}")
+                            f"Range breakout: {rng_pct:.2f}% tight range, broke {rng_h:.2f}"))
 
-    return None
+    # Tag confluence count on every match — the primary (matches[0]) is what
+    # the scorer entries on; confluence is a multiplier applied to its score.
+    n = len(matches)
+    for m in matches:
+        m["confluence_count"] = n
+        m["confluence_setups"] = [x.get("setup_type", "") for x in matches]
+    return matches
+
+
+def _detect_all_setups(
+    df:      pd.DataFrame,
+    vwap:    float,
+    current: float,
+    symbol:  str,
+) -> dict | None:
+    """
+    Backward-compatible wrapper: returns the first (highest-priority) match,
+    or None if nothing fires. The new multi-detect API is _detect_setups_multi.
+    """
+    matches = _detect_setups_multi(df, vwap, current, symbol)
+    return matches[0] if matches else None
 
 
 # ─── LangChain Tools ──────────────────────────────────────────────────────────

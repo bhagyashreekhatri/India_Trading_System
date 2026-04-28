@@ -68,6 +68,21 @@ DAILY_LOSS_KILL_PCT     = 0.025          # 2.5% of CAPITAL → freeze new entrie
                                          # Existing positions still managed (SL/TP/trail).
                                          # Auto-resets at next session boot.
 
+# ─── Confluence multiplier (Fix #5) ──────────────────────────────────────────
+# When multiple setup detectors fire on the same stock at the same bar, the
+# Raw score is multiplied before the regime multiplier. This is PROJECT_MEMORY
+# next-cycle priority #1 — confluence is one of the strongest signal-quality
+# tells in scalping (e.g., "VWAP reclaim + momentum breakout + tight range
+# break" all on the same candle is much stronger than any one in isolation).
+CONFLUENCE_MULTIPLIER_2 = 1.15           # 2 setups on same bar → +15% Raw
+CONFLUENCE_MULTIPLIER_3 = 1.25           # 3+ setups → +25% Raw
+
+# ─── Scanner turnover filter (Fix #5) ────────────────────────────────────────
+# Replaces the old "vol >= 10000 shares" check, which let ₹50 stocks and
+# ₹5,000 stocks through on the same bar. Turnover (price × volume) is the
+# right liquidity signal for a scalper — ensures the trade can actually fill.
+SCAN_MIN_TURNOVER       = 5_000_000      # ₹50 lakh minimum on the day so far
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 
