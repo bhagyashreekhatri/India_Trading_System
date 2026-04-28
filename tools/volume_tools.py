@@ -153,12 +153,19 @@ def batch_volume_rs(symbols: str) -> str:
 
 # ─── Market Breadth ───────────────────────────────────────────────────────────
 
-def _compute_breadth() -> dict:
+def _compute_breadth(vwap_cache: dict | None = None) -> dict:
     """
     Sample BREADTH_SAMPLE_SIZE most liquid stocks.
-    Uses 1 batch quote call (no historical data) — change_pct >= 0 is a solid
-    intraday proxy for "above VWAP" since price rising from open = strength.
-    Old approach: 50 get_vwap_with_candles() calls → exhausted Kite rate limit.
+
+    Fix #8 — accuracy ladder for the "above VWAP" check:
+      1. If `vwap_cache` has a real VWAP for the symbol (populated by the
+         setup-detection pass earlier in the same tick), compare last_price
+         to that. This is the true measurement.
+      2. Otherwise fall back to `last_price > today_open` — a much stronger
+         proxy than the old `change_pct >= 0`. Correctly catches "gap down
+         + recovery" (above own open, still negative on the day) and rejects
+         "gap up + fade" (below own open, still positive on the day).
+      3. Last-resort: `change_pct >= 0` if open price unavailable.
     """
     kite   = _get_kite()
     sample = get_top_liquid_stocks(BREADTH_SAMPLE_SIZE)
@@ -169,13 +176,26 @@ def _compute_breadth() -> dict:
 
     above_vwap = 0
     checked    = 0
+    used_real  = 0   # how many used real VWAP vs proxy
 
     for sym in sample:
         q = quotes.get(sym)
         if not q:
             continue
-        # change_pct >= 0 = stock positive on the day = proxy for above VWAP
-        if q.get("change_pct", 0) >= 0:
+        last  = q.get("last_price", 0)
+        open_ = q.get("open", 0)
+
+        is_above = False
+        if vwap_cache and sym in vwap_cache and vwap_cache[sym] and last > 0:
+            is_above = last > vwap_cache[sym]
+            used_real += 1
+        elif last > 0 and open_ > 0:
+            # Stronger proxy: above today's own open, not yesterday's close
+            is_above = last > open_
+        else:
+            is_above = q.get("change_pct", 0) >= 0   # last-resort
+
+        if is_above:
             above_vwap += 1
         checked += 1
 
@@ -195,6 +215,7 @@ def _compute_breadth() -> dict:
         "breadth_score":     breadth_score,
         "breadth_pct":       breadth_pct,
         "breadth_label":     breadth_label,
+        "used_real_vwap":    used_real,   # telemetry — how much of the sample had real VWAP
     }
 
 
@@ -215,16 +236,13 @@ def get_market_breadth(query: str = "") -> str:
 
 # ─── Sector Strength ─────────────────────────────────────────────────────────
 
-def _compute_sector_strength() -> list[dict]:
+def _compute_sector_strength(vwap_cache: dict | None = None) -> list[dict]:
     """
-    For each sector in SECTOR_LEADERS, compute:
-      - avg RS delta of leader stocks vs Nifty
-      - % of leaders with positive change_pct (proxy for above VWAP)
-      - sector_score (combined)
-    Returns list sorted by sector_score descending.
+    Per-sector RS + breadth.
 
-    Uses 2 batch quote calls total (all leaders + Nifty) instead of
-    the old approach: 8 sectors × 5 stocks × 2 API calls = 80 calls per tick.
+    Fix #8: same accuracy ladder as `_compute_breadth` — real VWAP from
+    setup-detection cache → fallback `last_price > today_open` → last-resort
+    `change_pct >= 0`.
     """
     kite = _get_kite()
 
@@ -233,7 +251,6 @@ def _compute_sector_strength() -> list[dict]:
     except Exception:
         nifty_chg = 0.0
 
-    # Collect all leader symbols and batch-fetch quotes in one call
     all_leaders = list({sym for leaders in SECTOR_LEADERS.values() for sym in leaders})
     try:
         all_quotes = kite.get_quotes(all_leaders)
@@ -252,9 +269,19 @@ def _compute_sector_strength() -> list[dict]:
             if not q:
                 continue
             stock_chg = q.get("change_pct", 0.0)
+            last      = q.get("last_price", 0)
+            open_     = q.get("open", 0)
             delta     = round(stock_chg - nifty_chg, 3)
             rs_deltas.append(delta)
-            if stock_chg >= 0:   # positive on day = proxy for above VWAP
+
+            is_above = False
+            if vwap_cache and sym in vwap_cache and vwap_cache[sym] and last > 0:
+                is_above = last > vwap_cache[sym]
+            elif last > 0 and open_ > 0:
+                is_above = last > open_
+            else:
+                is_above = stock_chg >= 0
+            if is_above:
                 above_vwap += 1
             valid_count += 1
 

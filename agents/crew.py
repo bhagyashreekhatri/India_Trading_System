@@ -145,6 +145,10 @@ class TradingCrew:
         self._regime_cache:  dict = {}
         self._breadth_tick   = -99
         self._regime_tick    = -99
+        # Per-tick VWAP cache — populated by _detect_setups, read by
+        # _detect_breadth so breadth uses real VWAP (Fix #8) instead of the
+        # change_pct proxy. Cleared at the start of every tick.
+        self._vwap_cache: dict[str, float] = {}
         # Clear yesterday's watchlist so dashboard shows only today's signals
         self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
@@ -154,6 +158,7 @@ class TradingCrew:
 
     def run_tick(self, min_score: float = None) -> dict:
         self._tick += 1
+        self._vwap_cache.clear()   # Fix #8 — fresh VWAPs per tick
         now = _now_ist()
         print(f"\n{'='*60}")
         print(f"[Crew] TICK #{self._tick} — {now.strftime('%H:%M:%S IST')}")
@@ -315,14 +320,18 @@ class TradingCrew:
     def _detect_breadth(self) -> dict:
         print("[Breadth] Computing market breadth...")
         try:
-            breadth  = _compute_breadth()
-            sectors  = _compute_sector_strength()
+            # Fix #8 — pass the per-tick VWAP cache so breadth uses real VWAP
+            # for active stocks; falls back to last>open proxy otherwise.
+            breadth  = _compute_breadth(vwap_cache=self._vwap_cache)
+            sectors  = _compute_sector_strength(vwap_cache=self._vwap_cache)
             top3     = [s["sector"] for s in sectors[:3]]
             bottom3  = [s["sector"] for s in sectors[-3:]]
 
             bs = breadth["breadth_score"]
             label = breadth["breadth_label"]
-            print(f"[Breadth] {bs:.0%} above VWAP → {label} | Top: {top3}")
+            real_n = breadth.get("used_real_vwap", 0)
+            print(f"[Breadth] {bs:.0%} above VWAP → {label} | Top: {top3} | "
+                  f"real_vwap_hits={real_n}/{breadth.get('stocks_checked', 0)}")
 
             # Send Telegram alert periodically (every ~15 min via tick filter)
             alert_market_breadth(breadth["breadth_pct"], label)
@@ -367,6 +376,11 @@ class TradingCrew:
                 if len(df) < 8:
                     few_candles += 1
                     continue
+
+                # Fix #8 — share the freshly-computed VWAP with the breadth /
+                # sector functions so they don't have to re-fetch candles.
+                if vwap:
+                    self._vwap_cache[sym] = vwap
 
                 quotes   = self.kite.get_quotes([sym])
                 curr     = quotes.get(sym, {}).get("last_price", 0.0)
