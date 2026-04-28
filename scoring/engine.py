@@ -151,12 +151,12 @@ class ScoringEngine:
             SetupType.RECOVERY_SETUP:    0.8,
         },
         RegimeType.RECOVERING: {
-            SetupType.MOMENTUM_BREAKOUT: 1.0,
+            SetupType.MOMENTUM_BREAKOUT: 1.1,   # was 1.0 — momentum_breakout is the engine (84% WR, +96k in 6 days)
             SetupType.VWAP_PULLBACK:     1.0,
             SetupType.VWAP_RECLAIM:      1.4,
-            SetupType.FAILED_BREAKDOWN:  1.1,
+            SetupType.FAILED_BREAKDOWN:  0.8,   # was 1.1 — 33% WR; positive only because of one ADANIGREEN outlier
             SetupType.RANGE_BREAKOUT:    0.9,
-            SetupType.RECOVERY_SETUP:    1.3,
+            SetupType.RECOVERY_SETUP:    1.0,   # was 1.3 — 42% WR, -7k loss, lowest profit factor (0.63)
         },
         RegimeType.EVENT: {
             SetupType.MOMENTUM_BREAKOUT: 0.7,
@@ -280,9 +280,17 @@ class ScoringEngine:
             return 0.0     # underperforming by more than 0.5% = no score
 
     def _score_news(self, news: NewsData) -> float:
-        """News / sentiment: -0.5 to +1.0 points."""
+        """
+        News / sentiment: -0.5 to +1.0 points.
+
+        Rebased 2026-04-28: no-news now returns 0.0 (was 0.5). The old +0.5
+        baseline meant every newsless stock got a free half-point added to Raw,
+        which was the dominant driver of A++ score inflation in the first 151
+        trades (file 04 calibration analysis). Real positive sentiment must now
+        be earned, not assumed.
+        """
         if not news.has_news:
-            return 0.5     # neutral baseline
+            return 0.0     # was 0.5 — no free credit for absence of news
 
         sentiment = news.llm_score   # 0–1 from LLM
 
