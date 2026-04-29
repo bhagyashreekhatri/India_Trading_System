@@ -300,6 +300,126 @@ def _gap_analysis(symbol: str) -> dict:
                 "tradeable": False, "reason": str(e)}
 
 
+# ─── Trend-Pullback (Fix #10) ─────────────────────────────────────────────────
+
+def _detect_trend_pullback(
+    df:      pd.DataFrame,
+    current: float,
+    symbol:  str,
+    atr:     float,
+) -> dict | None:
+    """
+    Detect a TREND_PULLBACK entry on a strong-mover stock.
+
+    Pattern (LONG only):
+      1. Stock is up ≥ 3 % on the day (computed from session-open of the df).
+      2. Of the last 8 closed bars, ≥ 5 closed green — established uptrend.
+      3. The last 4 bars (excluding current) contain at least one pullback bar
+         (close ≤ open OR a small green body after a big green body).
+      4. The current bar:
+         - is GREEN (close > open),
+         - body ratio ≥ 0.4,
+         - close > pullback low (the lowest low in the last 4 bars),
+         - close ≥ prior bar's close (resumption confirmation).
+
+    Entry: close of the current bar (tick-aligned in _make_signal).
+    Stop:  pullback low − one tick (rounded down).
+    Target: derived from R via TARGET_R1 / TARGET_R2 in _make_signal.
+
+    Returns signal dict or None. None on every failed precondition.
+    Fully defensive: returns None for any bad / missing / degenerate data.
+    """
+    # Defensive: enough bars to detect uptrend + pullback
+    if df is None or len(df) < 9:
+        return None
+
+    # Day's open is the first bar's open. Used to compute day_change_pct.
+    day_open = float(df.iloc[0]["open"])
+    if day_open <= 0:
+        return None
+
+    last  = df.iloc[-1]
+    prev  = df.iloc[-2]
+    last_close = float(last["close"])
+    last_open  = float(last["open"])
+    last_high  = float(last["high"])
+    last_low   = float(last["low"])
+    rng        = last_high - last_low
+
+    if rng <= 0:
+        return None
+
+    # 1. Day-change filter — strong-mover requirement
+    day_change_pct = (last_close - day_open) / day_open * 100
+    if day_change_pct < 3.0:
+        return None
+
+    # 2. Established uptrend — ≥ 5 green bars in last 8
+    up_count = 0
+    for i in range(-9, -1):
+        try:
+            if float(df.iloc[i]["close"]) > float(df.iloc[i]["open"]):
+                up_count += 1
+        except (IndexError, KeyError, ValueError):
+            return None
+    if up_count < 5:
+        return None
+
+    # 3. Pullback present — at least one non-green bar in last 4 (excl. current)
+    pulled_back = False
+    pullback_low = float("inf")
+    for i in range(-5, -1):
+        try:
+            bar_close = float(df.iloc[i]["close"])
+            bar_open  = float(df.iloc[i]["open"])
+            bar_low   = float(df.iloc[i]["low"])
+            pullback_low = min(pullback_low, bar_low)
+            if bar_close <= bar_open:
+                pulled_back = True
+        except (IndexError, KeyError, ValueError):
+            return None
+    if not pulled_back:
+        return None
+    if pullback_low == float("inf") or pullback_low <= 0:
+        return None
+
+    # 4. Current bar = the holding / resumption bar
+    if last_close <= last_open:
+        return None
+    body_ratio = abs(last_close - last_open) / rng
+    if body_ratio < 0.4:
+        return None
+    if last_close <= pullback_low:
+        return None
+    try:
+        prev_close = float(prev["close"])
+    except (KeyError, ValueError):
+        return None
+    if last_close < prev_close:
+        return None   # close must not be below prior bar's close — resumption requirement
+
+    # Stop: one tick below the pullback low (Fix #7 helper aligns it)
+    sl = pullback_low - TICK_SIZE
+    if sl >= last_close or sl <= 0:
+        return None
+    # Sanity: the stop distance must be wide enough to be tradeable
+    if (last_close - sl) / last_close < 0.0015:   # min 0.15% stop
+        return None
+
+    cp = (last_close - last_low) / rng
+
+    reason = (
+        f"Trend Pullback: stock +{day_change_pct:.1f}% on day, "
+        f"pulled back to {pullback_low:.2f}, holding bar closes "
+        f"{last_close:.2f} > prev close {prev_close:.2f}"
+    )
+
+    return _make_signal(
+        symbol, SetupType.TREND_PULLBACK, "long",
+        last_close, sl, atr, current, body_ratio, cp, reason,
+    )
+
+
 # ─── Main setup detector ──────────────────────────────────────────────────────
 
 def _detect_setups_multi(
@@ -335,6 +455,11 @@ def _detect_setups_multi(
     fb = _detect_failed_breakdown(df, vwap, current, symbol, atr)
     if fb:
         matches.append(fb)
+
+    # ── 2b. Trend Pullback (Fix #10) — strong-mover second-leg entry ─────────
+    tp = _detect_trend_pullback(df, current, symbol, atr)
+    if tp:
+        matches.append(tp)
 
     # ── 3. Recovery setup ────────────────────────────────────────────────────
     below = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] < vwap)

@@ -243,6 +243,33 @@ def test_score_capped_at_10():
     assert result.components.final_score <= 10.0
 
 
+def test_trend_pullback_in_event_regime_is_throttled():
+    """EVENT regime must throttle TREND_PULLBACK to 0.7× like every other setup."""
+    mult = engine._get_regime_multiplier(RegimeType.EVENT, SetupType.TREND_PULLBACK)
+    assert mult == 0.7, f"TREND_PULLBACK in EVENT should be 0.7, got {mult}"
+
+
+def test_trend_pullback_in_trending_regime_gets_boost():
+    """TREND_PULLBACK is meant to fire in trending markets — must get >= 1.2 multiplier."""
+    mult = engine._get_regime_multiplier(RegimeType.TRENDING, SetupType.TREND_PULLBACK)
+    assert mult >= 1.2, f"TREND_PULLBACK in TRENDING should boost ≥1.2, got {mult}"
+
+
+def test_trend_pullback_in_choppy_regime_is_penalised():
+    """Counter-trend in chop must be penalised (multiplier < 1.0)."""
+    mult = engine._get_regime_multiplier(RegimeType.CHOPPY, SetupType.TREND_PULLBACK)
+    assert mult < 1.0, f"TREND_PULLBACK in CHOPPY should be penalised <1.0, got {mult}"
+
+
+def test_all_setups_have_all_regimes():
+    """Every SetupType must have a multiplier in every RegimeType — KeyError-safe."""
+    for regime in RegimeType:
+        for setup in SetupType:
+            mult = engine._get_regime_multiplier(regime, setup)
+            assert isinstance(mult, (int, float)), \
+                f"{regime.value}/{setup.value} missing multiplier"
+
+
 def test_underperforming_stock_gets_zero_rs_score():
     """Stock underperforming index by >0.5% should get 0 RS score."""
     rs = make_rs(stock_chg=0.2, nifty_chg=0.9)   # delta = -0.7%
@@ -265,6 +292,11 @@ if __name__ == "__main__":
         test_grade_thresholds,
         test_event_regime_reduces_all_setups,
         test_score_capped_at_10,
+        test_underperforming_stock_gets_zero_rs_score,
+        test_trend_pullback_in_event_regime_is_throttled,
+        test_trend_pullback_in_trending_regime_gets_boost,
+        test_trend_pullback_in_choppy_regime_is_penalised,
+        test_all_setups_have_all_regimes,
     ]
 
     passed = 0

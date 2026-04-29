@@ -37,6 +37,23 @@
 
 ---
 
+## 🚨 PRODUCTION MANDATE (Bhagya's rule, 2026-04-28)
+```
+This agent will move to LIVE TRADING with REAL MONEY in 2–3 weeks.
+Before suggesting or writing ANY code:
+  - Treat every line as production code that will handle real INR.
+  - No hallucinated function names, classes, or imports — verify against the repo.
+  - No vague pseudocode — every fix must be concrete, testable, and deterministic.
+  - Defensive bounds (None checks, div-by-zero, empty df) on every new function.
+  - All new prices must go through tick-rounding (Fix #7 helpers).
+  - All new timestamps must be IST-aware (Fix #1 helpers).
+  - All new scoring inputs must integrate with the regime-multiplier table.
+  - When adding a SetupType: enum + REGIME_MULTIPLIERS row + tests, ALL three.
+  - Verify with python -c "import ast; ast.parse(...)" + run tests/test_engine.py
+    after every code change.
+  - If unsure about behaviour → ask. Never guess on production code.
+```
+
 ## ⚡ TOKEN DISCIPLINE — STRICT (Bhagya's rule)
 ```
 Opus 4.7 burns tokens fast. Every Claude session must:
