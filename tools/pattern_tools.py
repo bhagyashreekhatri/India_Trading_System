@@ -420,6 +420,86 @@ def _detect_trend_pullback(
     )
 
 
+# ─── Inside-Bar Breakout (Fix #12) ────────────────────────────────────────────
+
+def _detect_inside_bar_break(
+    df:      pd.DataFrame,
+    vwap:    float,
+    current: float,
+    symbol:  str,
+    atr:     float,
+) -> dict | None:
+    """
+    Three-bar pattern (LONG only):
+      bar[-3] = MOTHER bar — decent green body, body_ratio ≥ 0.4
+      bar[-2] = INSIDE bar — fully inside mother's range (high≤mother.high, low≥mother.low)
+      bar[-1] = BREAKOUT bar — closes above mother's high with body_ratio ≥ 0.4
+
+    Entry: close of breakout bar (tick-aligned via _make_signal).
+    Stop:  inside bar's low − one tick.
+    Bias filter: breakout close must be above VWAP (avoid counter-tape breaks).
+
+    Returns signal dict or None. Fully defensive on missing/degenerate data.
+    """
+    if df is None or len(df) < 3 or vwap is None:
+        return None
+
+    try:
+        m = df.iloc[-3]; ib = df.iloc[-2]; br = df.iloc[-1]
+        m_o, m_h, m_l, m_c = float(m["open"]), float(m["high"]), float(m["low"]), float(m["close"])
+        ib_h, ib_l         = float(ib["high"]), float(ib["low"])
+        br_o, br_h, br_l, br_c = float(br["open"]), float(br["high"]), float(br["low"]), float(br["close"])
+    except (KeyError, IndexError, ValueError):
+        return None
+
+    m_rng  = m_h - m_l
+    br_rng = br_h - br_l
+    if m_rng <= 0 or br_rng <= 0:
+        return None
+
+    # Mother bar: green + decent body
+    if m_c <= m_o:
+        return None
+    m_body = (m_c - m_o) / m_rng
+    if m_body < 0.4:
+        return None
+
+    # Inside bar: fully contained within mother
+    if not (ib_h <= m_h and ib_l >= m_l):
+        return None
+
+    # Breakout bar: closes above mother high, green, decent body
+    if br_c <= m_h:
+        return None
+    if br_c <= br_o:
+        return None
+    br_body = (br_c - br_o) / br_rng
+    if br_body < 0.4:
+        return None
+
+    # Bias filter: with the tape (above VWAP)
+    if br_c <= vwap:
+        return None
+
+    sl = ib_l - TICK_SIZE
+    if sl >= br_c or sl <= 0:
+        return None
+    if (br_c - sl) / br_c < 0.0015:   # min 0.15 % stop
+        return None
+
+    cp = (br_c - br_l) / br_rng
+    reason = (
+        f"Inside-Bar Break: mother {m_l:.2f}-{m_h:.2f} "
+        f"(body {m_body:.2f}), inside bar {ib_l:.2f}-{ib_h:.2f}, "
+        f"breakout closes {br_c:.2f} > mother high {m_h:.2f}"
+    )
+
+    return _make_signal(
+        symbol, SetupType.INSIDE_BAR_BREAK, "long",
+        br_c, sl, atr, current, br_body, cp, reason,
+    )
+
+
 # ─── Main setup detector ──────────────────────────────────────────────────────
 
 def _detect_setups_multi(
@@ -460,6 +540,11 @@ def _detect_setups_multi(
     tp = _detect_trend_pullback(df, current, symbol, atr)
     if tp:
         matches.append(tp)
+
+    # ── 2c. Inside-Bar Breakout (Fix #12) — compression-then-break ───────────
+    ib = _detect_inside_bar_break(df, vwap, current, symbol, atr)
+    if ib:
+        matches.append(ib)
 
     # ── 3. Recovery setup ────────────────────────────────────────────────────
     below = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] < vwap)

@@ -43,6 +43,7 @@ class SetupType(str, Enum):
     RANGE_BREAKOUT     = "range_breakout"
     RECOVERY_SETUP     = "recovery_setup"
     TREND_PULLBACK     = "trend_pullback"   # Fix #10 — strong-mover second-leg entry
+    INSIDE_BAR_BREAK   = "inside_bar_break" # Fix #12 — compression-then-breakout pattern
 
 
 class RegimeType(str, Enum):
@@ -172,6 +173,7 @@ class ScoringEngine:
             SetupType.RANGE_BREAKOUT:    1.1,
             SetupType.RECOVERY_SETUP:    0.8,
             SetupType.TREND_PULLBACK:    1.3,   # Fix #10 — best fit: trending regime + strong mover pullback
+            SetupType.INSIDE_BAR_BREAK:  1.2,   # Fix #12 — compression breakouts work in trends
         },
         RegimeType.CHOPPY: {
             SetupType.MOMENTUM_BREAKOUT: 0.6,
@@ -181,6 +183,7 @@ class ScoringEngine:
             SetupType.RANGE_BREAKOUT:    0.7,
             SetupType.RECOVERY_SETUP:    0.8,
             SetupType.TREND_PULLBACK:    0.7,   # counter-trend in chop — penalise
+            SetupType.INSIDE_BAR_BREAK:  0.8,   # tight ranges in chop often fake out
         },
         RegimeType.RECOVERING: {
             SetupType.MOMENTUM_BREAKOUT: 1.1,   # was 1.0 — momentum_breakout is the engine (84% WR, +96k in 6 days)
@@ -190,6 +193,7 @@ class ScoringEngine:
             SetupType.RANGE_BREAKOUT:    0.9,
             SetupType.RECOVERY_SETUP:    1.0,   # was 1.3 — 42% WR, -7k loss, lowest profit factor (0.63)
             SetupType.TREND_PULLBACK:    1.1,   # mild boost — recovering market with strong relative-strength names
+            SetupType.INSIDE_BAR_BREAK:  1.0,
         },
         RegimeType.EVENT: {
             SetupType.MOMENTUM_BREAKOUT: 0.7,
@@ -199,6 +203,7 @@ class ScoringEngine:
             SetupType.RANGE_BREAKOUT:    0.7,
             SetupType.RECOVERY_SETUP:    0.7,
             SetupType.TREND_PULLBACK:    0.7,
+            SetupType.INSIDE_BAR_BREAK:  0.7,
         },
     }
 
