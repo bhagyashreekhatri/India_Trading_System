@@ -16,13 +16,24 @@
 > - sl_hit / sl_trail_hit distinction ✅ Fix #3
 >
 > Still open and high-priority:
-> - INF-05 boot reconciliation with broker (live-readiness gate)
-> - DEAD-01 remove `agents/*_agent.py` and dead `tools/*_tools.py`; drop `crewai`/`langchain` from requirements
-> - BREADTH-01 actual VWAP-based breadth (not `change_pct >= 0` proxy)
-> - SHORT-01 add SHORT-side detectors
-> - RECON-02 every-60s position reconciler
-> - EOD-01 persist regime as a column on `positions` (today's `_extract_regime` heuristic returns "unknown" most of the time)
-> - DASH-03 Groq budget widget (`NewsClient.stats` already exposes counters)
+> - **INF-05 boot reconciliation with broker** (LIVE-READINESS GATE — biggest remaining risk)
+> - SHORT-01 add SHORT-side detectors (half the alpha unreachable)
+> - RECON-02 every-60s position reconciler with broker truth
+> - EOD-01 persist regime as a column on `positions` (today's heuristic returns "unknown")
+> - DEAD-01 remove dead `agents/*_agent.py` + `tools/{kite,news,chroma}_tools.py`; drop `crewai`/`langchain`
+> - DASH-03 Groq budget widget (counters already in `NewsClient.stats`)
+> - HTF-01 15-min higher-timeframe trend filter (reject counter-trend scalps)
+> - PDH-01 PDH/PDL levels — score boost on break above PDH
+> - LEAD-01 leaders watchlist (>3% + RVOL>2 + RS>1.5%) with relaxed proximity 1.5%
+> - NEWS-02 NewsAPI company-name aliases (currently "RELIANCE" misses "Reliance Industries")
+> - SECT-01 sector flow gating in `_allocate` (top-3 sector bonus)
+> - SLIP-01 simulate ₹0.05 entry / ₹0.10 stop slippage in cost calc
+> - KILL-LIVE-01 daily-loss kill switch tested in production (force synthetic loss)
+>
+> **Done in this cycle:**
+> - ✅ Fix #1–#12 + dashboard TZ fix (see PROJECT_MEMORY.md table)
+> - ✅ TREND_PULLBACK + INSIDE_BAR_BREAK = 8 setups (was 6)
+> - ✅ Daily-profit lockout (mirror of kill switch)
 
 
 > Comprehensive backlog of gaps, fixes, and improvements required to take this from "ran a 151-trade paper week" to "god-level scalper, live-ready". Each item has a priority (P0–P3), an effort estimate, and a target phase. The phase mapping aligns with file 07.

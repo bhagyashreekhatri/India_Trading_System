@@ -14,11 +14,19 @@
 | 5 | **Multi-setup + confluence + turnover scanner** — `_detect_setups_multi` returns all matches; `confluence_count` tagged; multipliers x1.15/x1.25; scanner uses `turnover ≥ ₹50L` not raw shares | `tools/pattern_tools.py`, `agents/crew.py`, `config/settings.py` | 3 setups fired together on synthetic strong breakout |
 | 6 | **Broker-side SL-M orders** — placed on entry, cancelled+replaced on TP1 / trail, cancelled before full exit; `sl_order_id` column on Position | `data/kite_client.py`, `memory/trade_state.py`, `agents/crew.py` | syntax + 10/10 engine tests |
 | 7 | **Tick-size rounding (₹0.05)** — `_round_to_tick`/`_round_down_tick`/`_round_up_tick` in engine; applied in `_make_signal` (entry/SL/TP1/TP2), `_calc_tp` (both), trail SL | `scoring/engine.py`, `tools/pattern_tools.py`, `tools/score_tools.py`, `agents/crew.py`, `config/settings.py` | rounding cases verified |
+| 8 | **Real-VWAP breadth** — per-tick `_vwap_cache` populated by setup detection; breadth + sector strength use real VWAP (fallback `last>open`) | `tools/volume_tools.py`, `agents/crew.py` | both bias directions fixed in mock test |
+| 9 | **Sizing floor** — per-position cap 20%→10% (10 pos × ₹1.5L = ₹15L exact); risk floor 0.03% (₹450); position floor 3% (₹45k); below floor → watchlist | `config/settings.py`, `agents/crew.py` | DIVISLAB/ONGC/NMDC qty=1 trades blocked, legitimate trades enter |
+| 10 | **TREND_PULLBACK setup** — strong-mover (≥3% day) second-leg pullback entry; mother-bar trend + pullback + resumption green bar | `scoring/engine.py`, `tools/pattern_tools.py`, `tests/test_engine.py` | 6 scenarios; SAPPHIRE-class detected with tick-aligned prices |
+| 11 | **Daily-profit lockout** — +3% capital P&L → freeze new entries; +2% → tighten gate to 8.0 (A+/A++ only). Mirror of Fix #3 kill switch on the upside | `config/settings.py`, `agents/crew.py` | thresholds verified at all PnL levels |
+| 12 | **INSIDE_BAR_BREAK setup** — 3-bar pattern: mother + inside + breakout above mother high; VWAP bias filter; tick-aligned | `scoring/engine.py`, `tools/pattern_tools.py` | 5 scenarios incl. defensive bounds |
+| Dash | **Dashboard learning_tab TZ fix** — `pd.to_datetime(format='ISO8601')` handles mix of naive (legacy) + IST-aware (Fix #1) timestamps | `dashboard/learning_tab.py` | mixed-format parse verified |
 
 **Constants added to `config/settings.py`:**
-`DAILY_LOSS_KILL_PCT=0.025`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`.
+`DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).
 
 **Schema additions on `positions`:** `sl_order_id TEXT DEFAULT ''`.
+
+**SetupType enum now (8 setups):** MOMENTUM_BREAKOUT, VWAP_PULLBACK, VWAP_RECLAIM, FAILED_BREAKDOWN, RANGE_BREAKOUT, RECOVERY_SETUP, **TREND_PULLBACK** (Fix #10), **INSIDE_BAR_BREAK** (Fix #12). All have multipliers across all 4 regimes.
 
 **New runtime files:** `news_cache.json` (persistent Groq cache; in `.gitignore`).
 
