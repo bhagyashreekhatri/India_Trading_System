@@ -73,8 +73,11 @@ Implications for the production go-live (2-3 weeks out):
   - Real round-trip slippage on a tight scalp could be 0.3-0.6%, which
     eats much of the targeted ₹1500-3000 net per trade.
 
-Status: NOT FIXED. Bhagya returns in ~3 hours to fix together.
-DO NOT touch trade entry/exit code until then — risk of breaking other paths.
+Status: ✅ FIXED 2026-04-29 as Fix #13.
+  - _allocate now fetches FRESH LTP, validates proximity vs live, uses live LTP as fill
+  - _partial_exit_tp1 refetches LTP at TP1 fire
+  - _full_exit refetches LTP at exit
+  - All paths fall back gracefully on quote failure
 ```
 
 ## 🚨 PRODUCTION MANDATE (Bhagya's rule, 2026-04-28)

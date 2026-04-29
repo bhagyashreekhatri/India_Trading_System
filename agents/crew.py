@@ -746,16 +746,39 @@ class TradingCrew:
                 print(f"[Allocator] {sym} sector {sector} full — skip")
                 continue
 
-            # Proximity check (price ran from entry)
-            curr  = s.get("current_price", s["entry_price"])
-            drift = abs(curr - s["entry_price"]) / s["entry_price"]
-            if drift > PROXIMITY_MAX_PCT:
-                print(f"[Allocator] {sym} price ran {drift*100:.2f}% — skip")
+            # ── Fix #13 — fetch FRESH LTP at order time ───────────────────
+            # The signal price (s["entry_price"]) is the close of the bar that
+            # produced the setup, which may be 3–25 minutes stale by the time
+            # we get here. Stamping that as the fill price overstates paper
+            # P&L and won't match live execution. Refetch live LTP, validate
+            # proximity against it, then USE THE LIVE LTP as the actual fill.
+            try:
+                live_q = self.kite.get_quotes([sym])
+                live_ltp = float(live_q.get(sym, {}).get("last_price", 0) or 0)
+            except Exception as e:
+                print(f"[Allocator] {sym} live quote failed ({e}) — skip")
+                continue
+            if live_ltp <= 0:
+                print(f"[Allocator] {sym} no live LTP — skip")
                 continue
 
-            # Position sizing
+            signal_px = float(s["entry_price"])
+            drift = abs(live_ltp - signal_px) / signal_px if signal_px > 0 else 1.0
+            if drift > PROXIMITY_MAX_PCT:
+                print(f"[Allocator] {sym} drifted {drift*100:.2f}% from signal "
+                      f"₹{signal_px:.2f} → live ₹{live_ltp:.2f} — skip")
+                continue
+
+            # Overwrite with the actual fill price; recompute TPs from it.
+            # SL stays — it's a technical level, not a price-relative offset.
+            s["entry_price"] = _round_to_tick(live_ltp, TICK_SIZE)
+            s["tp1_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R1)
+            s["tp2_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R2)
+
+            # Position sizing (uses the corrected entry)
             dist  = s["entry_price"] - s["stop_loss"]
             if dist <= 0:
+                print(f"[Allocator] {sym} live LTP ≤ SL — skip")
                 continue
 
             conservative = consec >= MAX_CONSECUTIVE_LOSSES
@@ -963,6 +986,16 @@ class TradingCrew:
     def _partial_exit_tp1(self, p, curr: float):
         """Exit 50% at TP1. Move SL to breakeven (broker-side SL-M replaced)."""
         from math import floor
+        # Fix #13 — refetch live LTP for honest fill price (curr from
+        # _manage_positions can be a few hundred ms stale)
+        try:
+            fq = self.kite.get_quotes([p.symbol])
+            fresh = float(fq.get(p.symbol, {}).get("last_price", 0) or 0)
+            if fresh > 0:
+                curr = fresh
+        except Exception:
+            pass
+
         qty_exit      = floor(p.quantity_remaining / 2)
         qty_remaining = p.quantity_remaining - qty_exit
         if qty_exit < 1:
@@ -1036,8 +1069,18 @@ class TradingCrew:
         except Exception:
             pass
 
+
     def _full_exit(self, p, curr: float, reason: str):
         """Close full remaining position. Cancel SL-M first to avoid double sell."""
+        # Fix #13 — refetch live LTP for honest exit-fill price
+        try:
+            fq = self.kite.get_quotes([p.symbol])
+            fresh = float(fq.get(p.symbol, {}).get("last_price", 0) or 0)
+            if fresh > 0:
+                curr = fresh
+        except Exception:
+            pass
+
         qty      = p.quantity_remaining
         sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
 
