@@ -28,7 +28,11 @@ CAPITAL                 = 1_500_000
 MAX_POSITIONS           = 10              # raised for paper trading (was 5)
 MAX_SECTOR_EXPOSURE     = 0.30
 RISK_PER_TRADE_PCT      = 0.01            # 1% of capital per trade
-MAX_POSITION_VALUE_PCT  = 0.20            # max 20% of capital per trade (₹3,00,000 at ₹15L capital)
+MAX_POSITION_VALUE_PCT  = 0.10            # 10% per trade (₹1.5L at ₹15L) — fits 10 positions in capital
+                                          # Was 0.20 = ran out of capital after 5-6 trades, last entries sized to qty=1
+MIN_RISK_PER_TRADE_PCT  = 0.0003          # 0.03% = ₹450 — pure paranoia floor (qty=1 stops here)
+                                          # The position-value floor below does the real work.
+MIN_POSITION_VALUE_PCT  = 0.03            # 3% of CAPITAL = ₹45k — skip+watchlist below this
 TARGET_R1               = 1.0            # TP1 — exit 50% here
 TARGET_R2               = 2.0            # TP2 — exit remaining 50% here
 SCAN_INTERVAL_MIN       = 3              # scan every 3 minutes (was 5)

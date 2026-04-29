@@ -55,6 +55,7 @@ from config.settings import (
     PROXIMITY_MAX_PCT, DAILY_LOSS_KILL_PCT,
     CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
     TICK_SIZE,
+    MIN_RISK_PER_TRADE_PCT, MIN_POSITION_VALUE_PCT,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -730,6 +731,22 @@ class TradingCrew:
 
             if qty < 1:
                 print(f"[Allocator] {sym} qty=0 — insufficient capital")
+                continue
+
+            # ── Sizing floor (Fix #9) — no qty=1 token trades ─────────────────
+            # When capital is mostly deployed, the 3rd cap above can push qty
+            # down to 1-2 shares. A 1-share trade can't earn the ₹1500-3000
+            # net target — the cost stack alone (~₹40-200/leg) leaves nothing.
+            # Reject below thresholds and watchlist instead.
+            risk_taken = qty * dist
+            position_val = qty * s["entry_price"]
+            min_risk = CAPITAL * MIN_RISK_PER_TRADE_PCT
+            min_pos  = CAPITAL * MIN_POSITION_VALUE_PCT
+            if risk_taken < min_risk or position_val < min_pos:
+                reason_skip = (f"qty={qty} risk=₹{risk_taken:.0f} pos=₹{position_val:.0f} — "
+                               f"below floor (need risk≥₹{min_risk:.0f} pos≥₹{min_pos:.0f}) — watchlist")
+                print(f"[Allocator] {sym} {reason_skip}")
+                self._add_watchlist(sym, s, s.get("final_score", 0), s.get("reason", ""))
                 continue
 
             # Enter!
