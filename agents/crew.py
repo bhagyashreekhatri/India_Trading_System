@@ -56,6 +56,7 @@ from config.settings import (
     CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
     TICK_SIZE,
     MIN_RISK_PER_TRADE_PCT, MIN_POSITION_VALUE_PCT,
+    DAILY_PROFIT_LOCKOUT_PCT, DAILY_PROFIT_TIGHTEN_PCT,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -653,11 +654,40 @@ class TradingCrew:
         open_pos = self.state.get_open_positions()
         consec   = self.state.get_consecutive_losses()
 
+        # ── Daily-profit lockout (Fix #11) ───────────────────────────────────
+        # Mirror of the kill-switch on the upside. Once today_pnl crosses the
+        # lockout ceiling (+3% of CAPITAL), no new entries — protect the day's
+        # gains. Existing positions still managed. Auto-resets at next session.
+        today_pnl       = self.state.get_today_pnl()
+        lockout_ceiling = CAPITAL * DAILY_PROFIT_LOCKOUT_PCT
+        tighten_ceiling = CAPITAL * DAILY_PROFIT_TIGHTEN_PCT
+
+        if today_pnl >= lockout_ceiling:
+            print(f"[Allocator] 🟢 DAILY-PROFIT LOCKOUT — "
+                  f"today P&L ₹{today_pnl:+,.0f} ≥ ceiling ₹{lockout_ceiling:+,.0f} "
+                  f"({DAILY_PROFIT_LOCKOUT_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"Done for the day — no new entries.")
+            if not getattr(self, "_profit_lock_alerted_today", False):
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🟢 <b>DAILY-PROFIT LOCKOUT</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"💰 Today P&L: ₹{today_pnl:+,.0f}\n"
+                        f"🎯 Ceiling: ₹{lockout_ceiling:+,.0f} "
+                        f"({DAILY_PROFIT_LOCKOUT_PCT*100:.1f}% of capital)\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Profitable day locked in. Open positions still managed."
+                    )
+                except Exception:
+                    pass
+                self._profit_lock_alerted_today = True
+            return
+
         # ── Daily-loss kill switch ───────────────────────────────────────────
         # Hard floor: if today_pnl drops below -DAILY_LOSS_KILL_PCT × CAPITAL,
         # block ALL new entries for the rest of the session. Existing positions
         # continue to be managed (SL/TP/trail/EOD). Auto-resets at next session.
-        today_pnl    = self.state.get_today_pnl()
         kill_floor   = -CAPITAL * DAILY_LOSS_KILL_PCT
         if today_pnl <= kill_floor:
             print(f"[Allocator] 🛑 DAILY-LOSS KILL SWITCH — "
@@ -681,6 +711,16 @@ class TradingCrew:
                     pass
                 self._kill_switch_alerted_today = True
             return
+
+        # ── Tighten gate at +2R (Fix #11) — ride existing winners only ───────
+        # Filter scored candidates to A+/A++ (≥8.0) once today_pnl crosses +2%.
+        # Continues to take A+ trades but rejects marginal A-grades from here.
+        if today_pnl >= tighten_ceiling:
+            pre_count = len(scored)
+            scored = [s for s in scored if s.get("final_score", 0) >= 8.0]
+            if pre_count != len(scored):
+                print(f"[Allocator] 🟡 +2R PROFIT — tightened gate to 8.0; "
+                      f"{pre_count} → {len(scored)} candidates remain")
 
         for s in scored:
             sym    = s["symbol"]

@@ -72,6 +72,10 @@ DAILY_LOSS_KILL_PCT     = 0.025          # 2.5% of CAPITAL → freeze new entrie
                                          # Existing positions still managed (SL/TP/trail).
                                          # Auto-resets at next session boot.
 
+# ─── Daily-profit lockout (Fix #11) — protect the day's gains ────────────────
+DAILY_PROFIT_LOCKOUT_PCT = 0.030         # 3% (₹45k) → no new entries today; manage open
+DAILY_PROFIT_TIGHTEN_PCT = 0.020         # 2% (₹30k) → raise score gate to conservative (8.0)
+
 # ─── Confluence multiplier (Fix #5) ──────────────────────────────────────────
 # When multiple setup detectors fire on the same stock at the same bar, the
 # Raw score is multiplied before the regime multiplier. This is PROJECT_MEMORY
