@@ -302,7 +302,8 @@ def render_learning_tab():
         } for t in closed if t.exit_time])
 
         if not df_trades.empty:
-            df_trades["exit_time"] = pd.to_datetime(df_trades["exit_time"])
+            # ISO8601 mode handles mix of naive (legacy) + IST-aware (post-Fix #1) timestamps
+            df_trades["exit_time"] = pd.to_datetime(df_trades["exit_time"], format="ISO8601", utc=True).dt.tz_convert("Asia/Kolkata").dt.tz_localize(None)
             df_trades = df_trades.sort_values("exit_time")
             df_trades["cumulative_pnl"] = df_trades["pnl"].cumsum()
 
