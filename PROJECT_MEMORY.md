@@ -45,6 +45,38 @@
 
 ---
 
+## 🔥 OPEN CRITICAL BUG — paper-trade fill-price mismatch (flagged 2026-04-29)
+```
+Symptom (Bhagya, live observation 2026-04-29):
+  Telegram entry alert says M&MFIN bought @ ₹320.55.
+  Dashboard shows entry ₹320.55.
+  Within seconds, actual LTP on Kite is ₹322.05 — a ₹1.50 (~0.47%) gap.
+
+Likely cause:
+  state.open_position() stores entry_price = signal["entry_price"], which is
+  the CLOSE of the trigger bar (from _detect_setups, possibly 1-3 minutes old).
+  Then kite.place_order() runs — in paper mode it just stamps a fake order id,
+  it does NOT refresh the actual fill price.
+  → Paper P&L is computed against an optimistic entry that wouldn't be
+    achievable live. All "wins" today are inflated by this slippage gap.
+
+Where the fix likely belongs:
+  - agents/crew.py::_allocate — after place_order returns, refetch quotes,
+    overwrite Position.entry_price with the actual LTP.
+  - OR: don't call open_position until AFTER fetching the live LTP at order time.
+  - Same fix needed for partial_exit_tp1 and full_exit (exit price should be
+    actual fill, not signal-bar close).
+
+Implications for the production go-live (2-3 weeks out):
+  - Live mode will reveal the true edge (with real slippage). Today's
+    paper P&L is overstated by roughly the size of this gap × number of trades.
+  - Real round-trip slippage on a tight scalp could be 0.3-0.6%, which
+    eats much of the targeted ₹1500-3000 net per trade.
+
+Status: NOT FIXED. Bhagya returns in ~3 hours to fix together.
+DO NOT touch trade entry/exit code until then — risk of breaking other paths.
+```
+
 ## 🚨 PRODUCTION MANDATE (Bhagya's rule, 2026-04-28)
 ```
 This agent will move to LIVE TRADING with REAL MONEY in 2–3 weeks.
