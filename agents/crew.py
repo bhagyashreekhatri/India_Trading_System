@@ -1163,14 +1163,30 @@ class TradingCrew:
             pass
 
     def _try_trail_sl(self, p, curr: float):
-        """Trail SL using ATR after TP1 hit. Replaces broker-side SL-M (Fix #6)."""
+        """Trail SL using ATR after TP1 hit. Replaces broker-side SL-M (Fix #6).
+        Fix #25 (B2) — volatility-adaptive multiplier: tighter in chop, looser
+        on hot trades.
+        """
         try:
             df, _ = self.kite.get_vwap_with_candles(p.symbol)
             if df is None:
                 return
             atr     = _calc_atr_from_df(df)
-            # Trail stop rounded DOWN to a valid tick (Fix #7).
-            new_sl  = _round_down_tick(curr - atr * TRAILING_ATR_MULTIPLIER, TICK_SIZE)
+
+            # Adaptive multiplier — default 0.5×ATR, tighter (0.7) in chop,
+            # looser (0.4) on hot-volume trades. Lower mult = tighter trail.
+            mult = TRAILING_ATR_MULTIPLIER
+            try:
+                if self._regime_cache.get("regime") == "choppy":
+                    mult = 0.7    # tighter — chop reverses fast
+                else:
+                    vr = self.kite.get_volume_ratio(p.symbol) or 0.0
+                    if vr >= 2.0:
+                        mult = 0.4   # looser — let hot trades run
+            except Exception:
+                pass
+
+            new_sl  = _round_down_tick(curr - atr * mult, TICK_SIZE)
 
             if new_sl > p.stop_loss:
                 self.state.update_stop_loss(p.id, new_sl)
@@ -1186,7 +1202,8 @@ class TradingCrew:
                 if new_oid:
                     self.state.update_sl_order_id(p.id, new_oid)
                 print(f"[PosMgr] 🔄 Trail SL {p.symbol}: "
-                      f"{p.stop_loss:.2f} → {new_sl:.2f} (ATR={atr:.2f})")
+                      f"{p.stop_loss:.2f} → {new_sl:.2f} "
+                      f"(ATR={atr:.2f}, mult={mult:.2f})")
                 try:
                     alert_trailing_sl_moved(p.symbol, p.stop_loss, new_sl, curr)
                 except Exception:
