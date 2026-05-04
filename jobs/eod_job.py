@@ -54,7 +54,9 @@ def run_eod_job():
                 else "hit_sl"  if trade.status == "closed_loss"
                 else "expired"
             )
-            regime = _extract_regime(trade.entry_reason or "")
+            # Fix #14 — prefer the persisted regime; fall back to substring
+            # parsing only for legacy rows that pre-date the column.
+            regime = (trade.regime or _extract_regime(trade.entry_reason or ""))
 
             chroma.store_signal_outcome(
                 symbol=trade.symbol,
@@ -129,7 +131,7 @@ def run_eod_job():
         # Try to get today's regime from the first trade's reason
         regime_today = "unknown"
         if closed:
-            regime_today = _extract_regime(closed[0].entry_reason or "")
+            regime_today = closed[0].regime or _extract_regime(closed[0].entry_reason or "")
 
         alert_eod_report(
             total_trades=len(closed),

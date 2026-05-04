@@ -81,6 +81,10 @@ class Position:
     # TP1/trail, cancelled on full exit. Paper trades store "PAPER_SL_*".
     sl_order_id:      str   = ""
 
+    # Live regime at entry time (Fix #14) — replaces eod_job's substring
+    # parsing of entry_reason which returned "unknown" for most trades.
+    regime:           str   = ""
+
 
 @dataclass
 class WatchlistItem:
@@ -177,6 +181,7 @@ class TradeStateManager:
                 "ALTER TABLE positions ADD COLUMN exit_reason       TEXT     DEFAULT ''",
                 "ALTER TABLE positions ADD COLUMN entry_reason      TEXT     DEFAULT ''",
                 "ALTER TABLE positions ADD COLUMN sl_order_id       TEXT     DEFAULT ''",
+                "ALTER TABLE positions ADD COLUMN regime            TEXT     DEFAULT ''",
             ]
             for sql in _migrations:
                 try:
@@ -187,13 +192,16 @@ class TradeStateManager:
     def open_position(self, symbol, setup_type, grade, score, confidence,
                       entry_price, stop_loss, tp1_price, tp2_price, quantity,
                       entry_reason="", score_breakdown=None, direction="long",
-                      sector="UNKNOWN") -> int:
+                      sector="UNKNOWN", regime="") -> int:
         now = _now_iso_ist()
         bd  = json.dumps(score_breakdown or {})
         with self._conn() as conn:
-            # Ensure sector column exists (may not in older DBs)
             try:
                 conn.execute("ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT 'UNKNOWN'")
+            except Exception:
+                pass
+            try:
+                conn.execute("ALTER TABLE positions ADD COLUMN regime TEXT DEFAULT ''")
             except Exception:
                 pass
             cur = conn.execute("""
@@ -201,12 +209,12 @@ class TradeStateManager:
                 (symbol,setup_type,direction,grade,score,confidence,
                  entry_price,stop_loss,initial_sl,target_price,
                  tp1_price,tp2_price,tp1_hit,quantity,quantity_remaining,
-                 entry_reason,score_breakdown,entry_time,status,sector)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)
+                 entry_reason,score_breakdown,entry_time,status,sector,regime)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,?)
             """, (symbol,setup_type,direction,grade,score,confidence,
                   entry_price,stop_loss,stop_loss,tp2_price,
                   tp1_price,tp2_price,quantity,quantity,
-                  entry_reason,bd,now,"open",sector))
+                  entry_reason,bd,now,"open",sector,regime))
             return cur.lastrowid
 
     def get_open_positions(self) -> List[Position]:
@@ -449,11 +457,15 @@ class TradeStateManager:
                   pnl, consec, pnl, pnl, today))
 
     def _row_to_position(self, row) -> Position:
-        # sl_order_id may not be in older rows — handle KeyError gracefully
+        # sl_order_id / regime may not be in older rows — handle gracefully
         try:
             sl_oid = row["sl_order_id"] or ""
         except (KeyError, IndexError):
             sl_oid = ""
+        try:
+            regime = row["regime"] or ""
+        except (KeyError, IndexError):
+            regime = ""
         return Position(
             id=row["id"], symbol=row["symbol"],
             setup_type=row["setup_type"] or "",
@@ -480,4 +492,5 @@ class TradeStateManager:
             status=row["status"] or "open",
             exit_price=row["exit_price"],
             sl_order_id=sl_oid,
+            regime=regime,
         )

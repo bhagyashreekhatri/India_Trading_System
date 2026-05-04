@@ -831,6 +831,7 @@ class TradingCrew:
                 score_breakdown=s.get("score_breakdown"),
                 direction=s.get("direction", "long"),
                 sector=sector,
+                regime=self._regime_cache.get("regime", ""),  # Fix #14
             )
 
             tx = "BUY" if s.get("direction", "long") == "long" else "SELL"
@@ -1137,7 +1138,7 @@ class TradingCrew:
             self.chroma.store_signal_outcome(
                 symbol=p.symbol,
                 setup_type=p.setup_type or "unknown",
-                regime=self._regime_cache.get("regime", "unknown"),
+                regime=(p.regime or self._regime_cache.get("regime", "unknown")),  # Fix #14 — entry-time regime first
                 score=p.score or 0.0,
                 grade=p.grade or "B",
                 entry=p.entry_price,
