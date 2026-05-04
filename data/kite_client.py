@@ -126,6 +126,23 @@ class KiteDataClient:
         print(f"[Kite] Historical data failed for {symbol} after {retries} attempts: {last_error}")
         return None
 
+    # ── Today-only filter (Fix #21) ──────────────────────────────────────────
+
+    def _filter_to_today(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """
+        Keep only bars dated today (IST). Used for intraday VWAP and
+        setup detection so prior-session bars don't pollute the math.
+        After weekends/holidays, days=1 returns 0 bars from the prior day,
+        so callers must use days=3+ and then filter via this helper.
+        """
+        if df is None or df.empty:
+            return df
+        today = datetime.now(IST).date()
+        out = df.copy()
+        out["_d"] = pd.to_datetime(out["date"]).dt.date
+        out = out[out["_d"] == today].drop(columns=["_d"]).reset_index(drop=True)
+        return out
+
     # ── VWAP calculation ──────────────────────────────────────────────────────
 
     def calculate_vwap(self, df: pd.DataFrame) -> pd.Series:
@@ -139,16 +156,24 @@ class KiteDataClient:
         return vwap
 
     def get_vwap(self, symbol: str) -> Optional[float]:
-        """Current VWAP for a symbol."""
-        df = self.get_candles(symbol, interval="5minute", days=1)
+        """Current VWAP for a symbol — today's session only (Fix #21)."""
+        df = self.get_candles(symbol, interval="5minute", days=3)
+        df = self._filter_to_today(df)
         if df is None or df.empty:
             return None
         vwap_series = self.calculate_vwap(df)
         return round(vwap_series.iloc[-1], 2)
 
     def get_vwap_with_candles(self, symbol: str) -> tuple[Optional[pd.DataFrame], Optional[float]]:
-        """Returns (df_with_vwap_column, current_vwap)."""
-        df = self.get_candles(symbol, interval="5minute", days=1)
+        """
+        Returns (today_df_with_vwap_column, current_vwap).
+        Fix #21 — fetches days=3 then filters to today's IST date so:
+          - Setup detection sees only today's bars (no overnight stitching).
+          - VWAP cumulative is reset cleanly each session.
+          - Survives weekends/holidays (days=1 used to return 0 bars after Mon).
+        """
+        df = self.get_candles(symbol, interval="5minute", days=3)
+        df = self._filter_to_today(df)
         if df is None or df.empty:
             return None, None
         df["vwap"] = self.calculate_vwap(df)
