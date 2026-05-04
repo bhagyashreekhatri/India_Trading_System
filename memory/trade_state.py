@@ -410,6 +410,16 @@ class TradeStateManager:
         sorted_stocks = sorted(stock_pnl.items(), key=lambda x: x[1], reverse=True)
         return [{"symbol":s,"total_pnl":round(p,0)} for s,p in sorted_stocks[:top_n]]
 
+    def count_today_trades_on(self, symbol: str) -> int:
+        """Fix #26 (C1) — # of trades opened on `symbol` today (any status)."""
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM positions WHERE symbol=? AND entry_time LIKE ?",
+                (symbol, f"{today}%")
+            ).fetchone()
+        return int(row[0]) if row else 0
+
     def is_in_cooldown(self, symbol: str, cooldown_minutes: int = 30) -> bool:
         with self._conn() as conn:
             row = conn.execute("""

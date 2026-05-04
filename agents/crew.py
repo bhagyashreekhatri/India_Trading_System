@@ -820,10 +820,17 @@ class TradingCrew:
             if any(p.symbol == sym for p in open_pos):
                 continue
 
-            # Cooldown
-            if self.state.is_in_cooldown(sym, 30):
-                print(f"[Allocator] {sym} in cooldown — skip")
+            # ── Cooldown + smart re-entry (Fix #26 / C1) ────────────────────
+            # Hard cap: max 2 trades per stock per day.
+            strikes_today = self.state.count_today_trades_on(sym)
+            if strikes_today >= 2:
+                print(f"[Allocator] {sym} 2 strikes used today — skip")
                 continue
+            if self.state.is_in_cooldown(sym, 30):
+                print(f"[Allocator] {sym} in 30-min cooldown — skip")
+                continue
+            # Track for sizing (second strike → half size)
+            second_strike = (strikes_today == 1)
 
             # Sector cap
             sec_count = sum(1 for p in open_pos if get_sector(p.symbol) == sector)
@@ -904,7 +911,11 @@ class TradingCrew:
             # Fix #23 (A6) — score-based sizing tier (combines multiplicatively
             # with conservative-mode dampener). A++ full, A+ 75%, A 50%, B 25%.
             grade_tier   = SCORE_SIZE_TIERS.get(s.get("grade", ""), 0.5)
-            risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier * grade_tier
+            # Fix #26 (C1) — second strike on same stock today → half size
+            second_dampen = 0.5 if second_strike else 1.0
+            risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier * grade_tier * second_dampen
+            if second_strike:
+                print(f"[Allocator] {sym} 2nd strike today — sizing dampened ×0.5")
             qty          = floor(risk_amount / dist)
             # Cap 1: max 20% of capital per position (prevents 1 trade using all capital)
             max_pos_val  = CAPITAL * MAX_POSITION_VALUE_PCT

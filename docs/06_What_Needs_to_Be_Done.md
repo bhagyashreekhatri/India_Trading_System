@@ -33,7 +33,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 
 ### C. Risk / capital discipline
 
-- **C1. Re-entry rule** — if same stock + same setup fires again > 30 min after stop, allow re-entry at HALF size (2 strikes max). Currently full cool-down. (~15 lines)
+- ✅ **C1. Re-entry rule** — Fix #26 deployed 2026-05-04. 2nd strike at half size; 2/day cap.
 - **C2. Loser-streak size dampener** — after each consecutive loss, multiply next size by 0.8 (compounding). Reset on a win. Already partial via consec-loss conservative mode. (~10 lines)
 - **C3. Winner-streak conservative shift** — after 3 wins in a row, raise score gate +0.3 for next 30 min. Counter regression-to-mean. (~10 lines)
 - **C4. Per-symbol daily loss cap** — no more than 2 trades per stock per day if both are stops. (~15 lines)

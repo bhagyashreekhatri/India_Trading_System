@@ -33,6 +33,7 @@
 | 23 | **A6 — Score-based sizing tiers** — risk scaled by grade: A++ ₹15k, A+ ₹11.25k, A ₹7.5k, B ₹3.75k. Concentrates capital in highest-conviction trades; combines multiplicatively with conservative-mode dampener | `config/settings.py`, `agents/crew.py` | size scaling verified |
 | 24 | **A5 — Time-of-day score-gate nudges** — 9 IST +0.5, 10 IST +0.3, 12 IST -0.2 (best hour per file 04). Raises bar in noisy/losing hours, lowers in proven hour | `config/settings.py`, `agents/crew.py` | engine tests pass |
 | 25 | **B2 — Volatility-adaptive trail** — `_try_trail_sl` multiplier now context-aware: 0.7×ATR in CHOPPY regime (tighter), 0.4×ATR when RVOL≥2 (looser, let hot trades run), else 0.5×ATR | `agents/crew.py` | engine tests pass |
+| 26 | **C1 — Smart re-entry rule** — after 30-min cooldown, allow 2nd entry on same stock at 50% size; hard cap 2/day. New `count_today_trades_on()` in trade_state | `memory/trade_state.py`, `agents/crew.py` | engine tests pass |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).
