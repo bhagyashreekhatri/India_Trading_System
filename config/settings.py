@@ -98,6 +98,16 @@ SCAN_MIN_TURNOVER       = 5_000_000      # ₹50 lakh minimum on the day so far
 # does not. Helper functions live in scoring/engine.py.
 TICK_SIZE               = 0.05
 
+# ─── Paper-mode slippage simulation (Fix #16) ────────────────────────────────
+# Real broker fills are NEVER at LTP. Even after Fix #13 (refetching live LTP),
+# paper P&L is still optimistic because we're not modelling actual queue
+# position or stop-fill drag. These bps figures simulate that to keep paper
+# results honest and ready us for live. Skipped automatically when
+# PAPER_TRADING=False (real broker provides real slippage).
+PAPER_SLIPPAGE_ENTRY_BPS  = 5    # 0.05% — entry filled slightly worse than LTP
+PAPER_SLIPPAGE_STOP_BPS   = 10   # 0.10% — stops fill worse (gap risk + market order)
+PAPER_SLIPPAGE_TARGET_BPS = 3    # 0.03% — targets fill near LTP (limit order)
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 

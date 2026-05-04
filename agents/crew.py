@@ -57,6 +57,8 @@ from config.settings import (
     TICK_SIZE,
     MIN_RISK_PER_TRADE_PCT, MIN_POSITION_VALUE_PCT,
     DAILY_PROFIT_LOCKOUT_PCT, DAILY_PROFIT_TIGHTEN_PCT,
+    PAPER_TRADING, PAPER_SLIPPAGE_ENTRY_BPS, PAPER_SLIPPAGE_STOP_BPS,
+    PAPER_SLIPPAGE_TARGET_BPS,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -102,6 +104,26 @@ def _parse_time(t: str) -> dtime:
 def _calc_tp(entry: float, sl: float, r: float) -> float:
     """entry + (entry - sl) * R, tick-aligned (Fix #7)."""
     return _round_up_tick(entry + (entry - sl) * r, TICK_SIZE)
+
+
+def _apply_paper_slippage(price: float, side: str, kind: str) -> float:
+    """
+    Worsen a paper fill price to simulate real broker execution (Fix #16).
+      side: 'buy' = entry-LONG / exit-SHORT  → fill HIGHER than LTP (worse for buyer)
+            'sell'= entry-SHORT / exit-LONG → fill LOWER than LTP (worse for seller)
+      kind: 'entry' / 'stop' / 'target' picks the bps from settings.
+    No-op in live mode (real broker → real slippage).
+    """
+    if not PAPER_TRADING or price <= 0:
+        return price
+    if kind == "stop":
+        bps = PAPER_SLIPPAGE_STOP_BPS
+    elif kind == "target":
+        bps = PAPER_SLIPPAGE_TARGET_BPS
+    else:
+        bps = PAPER_SLIPPAGE_ENTRY_BPS
+    factor = (1 + bps / 10000.0) if side == "buy" else (1 - bps / 10000.0)
+    return _round_to_tick(price * factor, TICK_SIZE)
 
 
 def _calc_atr_from_df(df) -> float:
@@ -794,7 +816,10 @@ class TradingCrew:
 
             # Overwrite with the actual fill price; recompute TPs from it.
             # SL stays — it's a technical level, not a price-relative offset.
-            s["entry_price"] = _round_to_tick(live_ltp, TICK_SIZE)
+            # Fix #16 — apply paper slippage so paper P&L reflects realistic
+            # entry-fill quality (no-op in live mode).
+            entry_side = "buy" if s.get("direction", "long") == "long" else "sell"
+            s["entry_price"] = _apply_paper_slippage(live_ltp, entry_side, "entry")
             s["tp1_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R1)
             s["tp2_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R2)
 
@@ -1019,6 +1044,9 @@ class TradingCrew:
                 curr = fresh
         except Exception:
             pass
+        # Fix #16 — paper-mode target slippage (limit order, small drag)
+        exit_side = "sell" if p.direction == "long" else "buy"
+        curr = _apply_paper_slippage(curr, exit_side, "target")
 
         qty_exit      = floor(p.quantity_remaining / 2)
         qty_remaining = p.quantity_remaining - qty_exit
@@ -1104,6 +1132,13 @@ class TradingCrew:
                 curr = fresh
         except Exception:
             pass
+
+        # Fix #16 — paper-mode slippage (worse for stops, lighter for targets/EOD)
+        exit_side = "sell" if p.direction == "long" else "buy"
+        if reason in ("sl_hit", "sl_trail_hit"):
+            curr = _apply_paper_slippage(curr, exit_side, "stop")
+        else:
+            curr = _apply_paper_slippage(curr, exit_side, "target")
 
         qty      = p.quantity_remaining
         sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
