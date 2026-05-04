@@ -212,6 +212,42 @@ class KiteDataClient:
             self._pdh_pdl_cache[key] = None
             return None
 
+    # ── Higher-timeframe (15-min) trend (Fix #20) ─────────────────────────────
+
+    def get_htf_trend(self, symbol: str, lookback_bars: int = 4) -> str:
+        """
+        Classify the 15-minute trend over the last `lookback_bars` bars.
+
+        Returns:
+          'up'      — at least 60% of recent transitions are HH+HL
+          'down'    — at least 60% are LH+LL
+          'neutral' — neither (chop / mixed)
+
+        Used by _allocate to veto counter-trend scalps. Defensive: returns
+        'neutral' on any data shortage rather than raising.
+        """
+        try:
+            df = self.get_candles(symbol, interval="15minute", days=2)
+            if df is None or len(df) < lookback_bars + 1:
+                return "neutral"
+            tail = df.iloc[-(lookback_bars + 1):].reset_index(drop=True)
+            ups = downs = 0
+            for i in range(1, len(tail)):
+                ph, pl = float(tail.iloc[i-1]["high"]), float(tail.iloc[i-1]["low"])
+                ch, cl = float(tail.iloc[i]["high"]),   float(tail.iloc[i]["low"])
+                if ch > ph and cl > pl:
+                    ups += 1
+                elif ch < ph and cl < pl:
+                    downs += 1
+            need = max(1, int(lookback_bars * 0.6))
+            if ups >= need and ups > downs:
+                return "up"
+            if downs >= need and downs > ups:
+                return "down"
+            return "neutral"
+        except Exception:
+            return "neutral"
+
     # ── Bid-ask spread ────────────────────────────────────────────────────────
 
     def get_spread_pct(self, symbol: str) -> float:

@@ -27,6 +27,7 @@
 | 17 | **PDH/PDL scoring boost** — entry > previous day's high earns +0.3 score nudge. Cached per-day per-symbol so only one Kite call per stock per session | `data/kite_client.py`, `agents/crew.py` | `get_pdh_pdl()`; saved as `pdh_nudge` in score_breakdown |
 | 18 | **NewsAPI company-name aliases** — `COMPANY_NAMES` dict (~80 names) + `get_company_name()`; query NewsAPI with `"<company>" OR <symbol>` instead of bare ticker. Doubles news hit-rate | `config/universe.py`, `data/news_client.py` | "RELIANCE" now matches "Reliance Industries" headlines |
 | 19 | **Leaders watchlist — relaxed proximity** — stocks up ≥3% with RS≥1.5% get 1.5% proximity ceiling (vs 0.7%). Catches trending entries that strict proximity rejects | `config/settings.py`, `agents/crew.py` | 6 threshold cases verified |
+| 20 | **15-min HTF trend filter** — `get_htf_trend()` classifies last 4 fifteen-min bars as up/down/neutral via HH-HL count. LONG entries vetoed when HTF is DOWN. Defensive `neutral` default on any data shortage | `data/kite_client.py`, `agents/crew.py` | up/down/neutral/short cases verified |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).

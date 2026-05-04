@@ -21,11 +21,10 @@
 > - RECON-02 every-60s position reconciler with broker truth
 > - DEAD-01 remove dead `agents/*_agent.py` + `tools/{kite,news,chroma}_tools.py`; drop `crewai`/`langchain`
 > - DASH-03 Groq budget widget (counters already in `NewsClient.stats`)
-> - HTF-01 15-min higher-timeframe trend filter (reject counter-trend scalps)
 > - KILL-LIVE-01 daily-loss kill switch tested in production (force synthetic loss)
 >
-> **Done in this cycle (19 fixes total):**
-> - ✅ Fix #1–#19 + dashboard TZ fix (see PROJECT_MEMORY.md table)
+> **Done in this cycle (20 fixes total):**
+> - ✅ Fix #1–#20 + dashboard TZ fix (see PROJECT_MEMORY.md table)
 > - ✅ 8 setups (was 6) — added TREND_PULLBACK + INSIDE_BAR_BREAK
 > - ✅ Daily-profit lockout (mirror of kill switch)
 > - ✅ Honest live fill prices (no more 20-min stale entries)
@@ -35,6 +34,7 @@
 > - ✅ PDH break bonus (entry > prior-day high → +0.3 score nudge)
 > - ✅ NewsAPI company-name aliases (RELIANCE now matches "Reliance Industries")
 > - ✅ Leaders watchlist — relaxed 1.5% proximity for strong movers
+> - ✅ 15-min HTF trend filter — vetoes counter-trend longs
 
 
 > Comprehensive backlog of gaps, fixes, and improvements required to take this from "ran a 151-trade paper week" to "god-level scalper, live-ready". Each item has a priority (P0–P3), an effort estimate, and a target phase. The phase mapping aligns with file 07.

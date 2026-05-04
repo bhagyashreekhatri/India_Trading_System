@@ -853,6 +853,18 @@ class TradingCrew:
                 print(f"[Allocator] ⚡ LEADER {sym} drift {drift*100:.2f}% allowed "
                       f"(chg={live_chg:.1f}% RS={rs_d:+.1f}%)")
 
+            # ── 15-min HTF trend filter (Fix #20) ─────────────────────────────
+            # Reject counter-trend scalps — these are the highest-failure
+            # category in the trade-log analysis. Only veto LONGs when the
+            # higher timeframe is firmly DOWN.
+            try:
+                htf = self.kite.get_htf_trend(sym)
+            except Exception:
+                htf = "neutral"
+            if s.get("direction", "long") == "long" and htf == "down":
+                print(f"[Allocator] {sym} 15m HTF trend is DOWN — counter-trend, skip")
+                continue
+
             # Overwrite with the actual fill price; recompute TPs from it.
             # SL stays — it's a technical level, not a price-relative offset.
             # Fix #16 — apply paper slippage so paper P&L reflects realistic
