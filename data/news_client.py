@@ -151,10 +151,22 @@ class NewsClient:
             return []
         if self._rate_limited_today:
             return []
-        query = company_name if company_name else symbol
+        # Fix #18 — query with BOTH company name AND ticker. NewsAPI rarely
+        # indexes Indian tickers, but it indexes company names heavily.
+        if not company_name:
+            try:
+                from config.universe import get_company_name
+                company_name = get_company_name(symbol)
+            except Exception:
+                company_name = symbol
+        # Build OR query; quoted phrase + ticker fallback
+        if company_name and company_name != symbol:
+            query_str = f'"{company_name}" OR {symbol} stock NSE'
+        else:
+            query_str = f"{symbol} stock India NSE"
         try:
             response = self.newsapi.get_everything(
-                q=f"{query} stock India NSE",
+                q=query_str,
                 language="en",
                 sort_by="publishedAt",
                 from_param=(datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d"),

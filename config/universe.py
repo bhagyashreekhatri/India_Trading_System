@@ -171,6 +171,100 @@ SECTOR_MAP = {
 FULL_UNIVERSE = list(dict.fromkeys(NIFTY_50 + HIGH_VOLUME_EXTRAS))  # deduped, 150 stocks
 
 
+# ─── Company-name aliases for news search (Fix #18) ──────────────────────────
+# NewsAPI rarely uses ticker symbols ("RELIANCE", "HDFCBANK") in headlines —
+# it uses official names. This map lets the news client query with both.
+# Falls back to the symbol itself if not listed.
+COMPANY_NAMES = {
+    # Nifty 50 — most-covered names
+    "RELIANCE":   "Reliance Industries",
+    "TCS":        "Tata Consultancy Services",
+    "HDFCBANK":   "HDFC Bank",
+    "INFY":       "Infosys",
+    "ICICIBANK":  "ICICI Bank",
+    "HINDUNILVR": "Hindustan Unilever",
+    "SBIN":       "State Bank of India",
+    "BHARTIARTL": "Bharti Airtel",
+    "ITC":        "ITC Limited",
+    "KOTAKBANK":  "Kotak Mahindra Bank",
+    "LT":         "Larsen Toubro",
+    "HCLTECH":    "HCL Technologies",
+    "AXISBANK":   "Axis Bank",
+    "BAJFINANCE": "Bajaj Finance",
+    "ASIANPAINT": "Asian Paints",
+    "MARUTI":     "Maruti Suzuki",
+    "SUNPHARMA":  "Sun Pharmaceutical",
+    "TITAN":      "Titan Company",
+    "ULTRACEMCO": "UltraTech Cement",
+    "WIPRO":      "Wipro",
+    "ONGC":       "Oil and Natural Gas Corporation",
+    "NTPC":       "NTPC Limited",
+    "POWERGRID":  "Power Grid Corporation",
+    "COALINDIA":  "Coal India",
+    "BPCL":       "Bharat Petroleum",
+    "TECHM":      "Tech Mahindra",
+    "NESTLEIND":  "Nestle India",
+    "DRREDDY":    "Dr Reddys Laboratories",
+    "DIVISLAB":   "Divis Laboratories",
+    "CIPLA":      "Cipla",
+    "BAJAJFINSV": "Bajaj Finserv",
+    "HINDALCO":   "Hindalco Industries",
+    "JSWSTEEL":   "JSW Steel",
+    "TATASTEEL":  "Tata Steel",
+    "GRASIM":     "Grasim Industries",
+    "ADANIENT":   "Adani Enterprises",
+    "ADANIPORTS": "Adani Ports",
+    "APOLLOHOSP": "Apollo Hospitals",
+    "EICHERMOT":  "Eicher Motors",
+    "HEROMOTOCO": "Hero MotoCorp",
+    "BRITANNIA":  "Britannia Industries",
+    "INDUSINDBK": "IndusInd Bank",
+    "SBILIFE":    "SBI Life Insurance",
+    "HDFCLIFE":   "HDFC Life Insurance",
+    "TATACONSUM": "Tata Consumer Products",
+    "BAJAJ-AUTO": "Bajaj Auto",
+    "UPL":        "UPL Limited",
+    "TATAMOTORS": "Tata Motors",
+    "M&M":        "Mahindra Mahindra",
+    "LTIM":       "LTIMindtree",
+    # High-volume extras commonly in news
+    "ADANIGREEN": "Adani Green Energy",
+    "ADANIPOWER": "Adani Power",
+    "TATAPOWER":  "Tata Power",
+    "BANKBARODA": "Bank of Baroda",
+    "PNB":        "Punjab National Bank",
+    "CANBK":      "Canara Bank",
+    "YESBANK":    "Yes Bank",
+    "BANDHANBNK": "Bandhan Bank",
+    "PERSISTENT": "Persistent Systems",
+    "COFORGE":    "Coforge",
+    "MPHASIS":    "Mphasis",
+    "TATAELXSI":  "Tata Elxsi",
+    "TVSMOTOR":   "TVS Motor",
+    "MOTHERSON":  "Samvardhana Motherson",
+    "BOSCHLTD":   "Bosch",
+    "MRF":        "MRF Limited",
+    "VEDL":       "Vedanta",
+    "NMDC":       "NMDC Limited",
+    "SAIL":       "Steel Authority of India",
+    "IRCTC":      "IRCTC",
+    "HAL":        "Hindustan Aeronautics",
+    "BEL":        "Bharat Electronics",
+    "DLF":        "DLF Limited",
+    "BHEL":       "BHEL",
+    "RVNL":       "Rail Vikas Nigam",
+    "IDEA":       "Vodafone Idea",
+    "ZEEL":       "Zee Entertainment",
+    "DABUR":      "Dabur India",
+    "MARICO":     "Marico",
+}
+
+
+def get_company_name(symbol: str) -> str:
+    """Return official company name for news search; fall back to symbol."""
+    return COMPANY_NAMES.get(symbol, symbol)
+
+
 def get_sector(symbol: str) -> str:
     return SECTOR_MAP.get(symbol, "OTHER")
 
