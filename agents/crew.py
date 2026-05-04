@@ -583,6 +583,28 @@ class TradingCrew:
                     elif boosted >= 5.0: comp.grade = Grade.B
                     else:                comp.grade = Grade.C
 
+                # ── Sector flow nudge (Fix #15) ───────────────────────────────
+                # Trade WITH the day's flow. Top-3 sectors get a small boost,
+                # bottom-3 get a penalty (more likely to fall below the gate).
+                # Uses already-computed top_sectors / weak_sectors from breadth.
+                top_secs  = breadth_data.get("top_sectors", []) or []
+                weak_secs = breadth_data.get("weak_sectors", []) or []
+                sym_sector = s.get("sector", get_sector(sym))
+                sector_nudge = 0.0
+                if sym_sector in top_secs:
+                    sector_nudge = 0.3
+                elif sym_sector in weak_secs:
+                    sector_nudge = -0.5
+                if sector_nudge != 0.0:
+                    new_score = max(0.0, min(10.0, comp.final_score + sector_nudge))
+                    comp.final_score = new_score
+                    from scoring.engine import Grade
+                    if new_score >= 9.0:   comp.grade = Grade.A_PLUS_PLUS
+                    elif new_score >= 8.0: comp.grade = Grade.A_PLUS
+                    elif new_score >= 7.0: comp.grade = Grade.A
+                    elif new_score >= 5.0: comp.grade = Grade.B
+                    else:                  comp.grade = Grade.C
+
                 # Per-setup score overrides — raise bar for underperforming setups
                 SETUP_MIN_SCORES = {
                     "failed_breakdown": 7.5,   # 33% WR in 151-trade dataset
@@ -616,6 +638,7 @@ class TradingCrew:
                             "news_sentiment":   comp.news_sentiment,
                             "confluence_count": s.get("confluence_count", 1),
                             "confluence_mult":  conf_mult,
+                            "sector_nudge":     sector_nudge,
                         },
                         "rs_delta":    rs_delta,
                         "news_headline": headline,
