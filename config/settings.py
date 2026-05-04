@@ -60,6 +60,9 @@ LEADER_RS_DELTA_PCT     = 1.5
 VOLUME_MIN_RATIO        = 1.2
 VOLUME_STRONG_RATIO     = 1.5
 VOLUME_VERY_STRONG      = 2.5
+MOMENTUM_BO_MIN_RVOL    = 2.0   # Fix #22 (A1) — hard floor for momentum_breakout
+                                # Real breakouts come on volume; without 2× RVOL,
+                                # 60% are fakeouts that get faded.
 
 # ─── Market breadth thresholds ───────────────────────────────────────────────
 BREADTH_BULLISH         = 0.65           # >65% stocks above VWAP → lean long

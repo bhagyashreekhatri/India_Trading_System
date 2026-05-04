@@ -8,7 +8,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 
 ### A. Entry quality (win-rate boosters)
 
-- **A1. Volume confirmation veto for momentum_breakout** — require `volume_ratio ≥ 2.0` (not 1.5). Without 2× volume, breakouts fake out 60 % of the time. (~5 lines, settings change)
+- ✅ **A1. Volume confirmation veto for momentum_breakout** — Fix #22 deployed 2026-05-04. RVOL ≥ 2.0 required.
 - **A2. Score decay over time** — signal score drops 0.5 if entry doesn't fire within 5 min of detection (price ran or quality stale). Avoid entering on aging signals. (~15 lines)
 - **A3. Two-bar confirmation on momentum BO** — require the previous bar to also be green and close above the breakout level, not just the current. Drops 1-bar-fakeouts. (~10 lines)
 - **A4. Range expansion check** — last bar's range must be ≥ 1.3× the prior 5-bar mean range. Detects real momentum vs grinding chop. (~10 lines)

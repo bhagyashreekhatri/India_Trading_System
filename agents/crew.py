@@ -48,7 +48,7 @@ from config.settings import (
     MAX_CONSECUTIVE_LOSSES, CONSERVATIVE_SIZE_PCT, MAX_POSITION_VALUE_PCT,
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
-    BREADTH_BULLISH, BREADTH_BEARISH,
+    BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
@@ -534,6 +534,15 @@ class TradingCrew:
             try:
                 # Volume + RS
                 vol_ratio, spread, rs_delta, liq = self._get_volume_rs(sym, nchg)
+
+                # ── A1 / Fix #22 — momentum_breakout volume hard-veto ───────
+                # Real breakouts come on volume. Reject momentum_breakout if
+                # RVOL < 2.0 — kills the #1 fakeout class (file 04 analysis).
+                if (s.get("setup_type") == "momentum_breakout"
+                        and vol_ratio < MOMENTUM_BO_MIN_RVOL):
+                    print(f"[Scorer] {sym} momentum_breakout RVOL={vol_ratio:.2f} "
+                          f"< {MOMENTUM_BO_MIN_RVOL} — fakeout risk, skip")
+                    continue
 
                 # News (Groq LLM — this is the ONLY LLM call)
                 has_news, news_score, catalyst, headline = self._get_news(sym)
