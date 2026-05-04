@@ -52,6 +52,9 @@ MIN_SCORE_ENTRY         = 7.0            # Grade A minimum
 MIN_SCORE_ENTRY_CONSERVATIVE = 8.0      # used after 3 consecutive losses
 MIN_SCORE_WATCHLIST     = 5.0
 PROXIMITY_MAX_PCT       = 0.007
+LEADER_PROXIMITY_MAX_PCT = 0.015          # Fix #19 — relaxed for strong movers (≥3% chg, RS≥1.5%)
+LEADER_DAY_CHG_PCT      = 3.0
+LEADER_RS_DELTA_PCT     = 1.5
 
 # ─── Volume thresholds ────────────────────────────────────────────────────────
 VOLUME_MIN_RATIO        = 1.2

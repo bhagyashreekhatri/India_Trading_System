@@ -52,7 +52,8 @@ from config.settings import (
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
-    PROXIMITY_MAX_PCT, DAILY_LOSS_KILL_PCT,
+    PROXIMITY_MAX_PCT, LEADER_PROXIMITY_MAX_PCT, LEADER_DAY_CHG_PCT, LEADER_RS_DELTA_PCT,
+    DAILY_LOSS_KILL_PCT,
     CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
     TICK_SIZE,
     MIN_RISK_PER_TRADE_PCT, MIN_POSITION_VALUE_PCT,
@@ -829,10 +830,28 @@ class TradingCrew:
 
             signal_px = float(s["entry_price"])
             drift = abs(live_ltp - signal_px) / signal_px if signal_px > 0 else 1.0
-            if drift > PROXIMITY_MAX_PCT:
-                print(f"[Allocator] {sym} drifted {drift*100:.2f}% from signal "
-                      f"₹{signal_px:.2f} → live ₹{live_ltp:.2f} — skip")
+
+            # Fix #19 — leaders (strong movers with positive RS) get a relaxed
+            # proximity ceiling so we don't keep rejecting trending stocks for
+            # the very thing that makes them tradeable.
+            is_leader = False
+            try:
+                live_chg = float(live_q.get(sym, {}).get("change_pct", 0) or 0)
+                rs_d     = float(s.get("rs_delta", 0) or 0)
+                if live_chg >= LEADER_DAY_CHG_PCT and rs_d >= LEADER_RS_DELTA_PCT:
+                    is_leader = True
+            except Exception:
+                pass
+            prox_max = LEADER_PROXIMITY_MAX_PCT if is_leader else PROXIMITY_MAX_PCT
+
+            if drift > prox_max:
+                tag = " LEADER" if is_leader else ""
+                print(f"[Allocator] {sym} drifted {drift*100:.2f}% > {prox_max*100:.2f}%{tag} "
+                      f"— signal ₹{signal_px:.2f} → live ₹{live_ltp:.2f} — skip")
                 continue
+            if is_leader and drift > PROXIMITY_MAX_PCT:
+                print(f"[Allocator] ⚡ LEADER {sym} drift {drift*100:.2f}% allowed "
+                      f"(chg={live_chg:.1f}% RS={rs_d:+.1f}%)")
 
             # Overwrite with the actual fill price; recompute TPs from it.
             # SL stays — it's a technical level, not a price-relative offset.
