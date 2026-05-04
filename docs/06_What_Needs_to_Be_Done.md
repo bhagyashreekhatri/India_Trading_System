@@ -1,5 +1,85 @@
 # 06 — What Needs to Be Done
 
+---
+
+## 🎯 SCALPING PERFORMANCE BACKLOG (added 2026-05-04 after a losing day)
+
+Concrete improvements that make entries and exits smarter. Pickable one-by-one.
+
+### A. Entry quality (win-rate boosters)
+
+- **A1. Volume confirmation veto for momentum_breakout** — require `volume_ratio ≥ 2.0` (not 1.5). Without 2× volume, breakouts fake out 60 % of the time. (~5 lines, settings change)
+- **A2. Score decay over time** — signal score drops 0.5 if entry doesn't fire within 5 min of detection (price ran or quality stale). Avoid entering on aging signals. (~15 lines)
+- **A3. Two-bar confirmation on momentum BO** — require the previous bar to also be green and close above the breakout level, not just the current. Drops 1-bar-fakeouts. (~10 lines)
+- **A4. Range expansion check** — last bar's range must be ≥ 1.3× the prior 5-bar mean range. Detects real momentum vs grinding chop. (~10 lines)
+- **A5. Time-of-day score gates** — data-driven: 9 IST gate +0.5 (loud noise hour), 10 IST gate +0.3, 12 IST gate -0.2 (best hour). Per Fix #04 analysis. (~15 lines)
+- **A6. Score-based sizing** — A++ trades full size, A+ = 75 %, A = 50 %, B = 25 %. Higher conviction → larger position. (~15 lines)
+- **A7. Bid-ask depth check** — top-of-book imbalance ≥ 1.5× in trade direction at entry. Detects real institutional flow. (~25 lines)
+- **A8. EMA-stack confirmation** — 5-EMA > 8-EMA > 13-EMA on the trigger bar for LONG entries. Adds higher-quality trend filter. (~20 lines)
+- **A9. Lunch-window gate dynamic** — after a 9 IST loss day, RAISE midday gate to 8.5 (trade only A+/A++). After a 9 IST win day, keep at 8.0. Adaptive risk. (~10 lines)
+- **A10. Earnings calendar veto** — skip stocks with announcement in next 60 min OR last 60 min (post-news vol drag). Needs external calendar source. (~30 lines)
+
+### B. Exit quality (R-multiple boosters)
+
+- **B1. Three-tier targets** — TP1 = 0.7R (book 33 %), TP2 = 1.5R (book 33 %), TP3 = trail. Captures more partials, lets winners run. (~25 lines)
+- **B2. Volatility-adaptive trail** — replace fixed 0.5 × ATR trail with `0.4 × ATR` if volume_ratio > 2 (run hot trades), `0.7 × ATR` in CHOPPY regime. (~15 lines)
+- **B3. Aggressive trail after +1.5R** — tighten trail to 0.3 × ATR once profit ≥ 1.5R. Lock more of the move. (~10 lines)
+- **B4. Anchored-VWAP exit** — exit if price closes below the AVWAP from the breakout bar (long-side). High-precision invalidation. (~20 lines)
+- **B5. Time-stop tiers** — ≤ 0.3R after 30 min → exit half; ≤ 0.5R after 45 min → exit full. Faster than current 45-min/0.15R rule. (~15 lines)
+- **B6. Thesis-broken exit** — VWAP-reclaim/pullback trades exit immediately if close goes back below VWAP with body. Already partly in the playbook, not coded. (~20 lines)
+- **B7. Sector-roll exit** — if the trade's sector loses top-3 status mid-trade, tighten trail by 30 %. Catches sector rotation against position. (~15 lines)
+- **B8. News-spike exit** — if VIX or Nifty rapid spike > 1 % in 5 min, halve all open positions. (~20 lines)
+- **B9. End-of-day partial unwind** — start exiting (50 %) at 14:30, all flat by 14:55 (vs current 15:00 hard close). Smoother liquidity. (~10 lines)
+
+### C. Risk / capital discipline
+
+- **C1. Re-entry rule** — if same stock + same setup fires again > 30 min after stop, allow re-entry at HALF size (2 strikes max). Currently full cool-down. (~15 lines)
+- **C2. Loser-streak size dampener** — after each consecutive loss, multiply next size by 0.8 (compounding). Reset on a win. Already partial via consec-loss conservative mode. (~10 lines)
+- **C3. Winner-streak conservative shift** — after 3 wins in a row, raise score gate +0.3 for next 30 min. Counter regression-to-mean. (~10 lines)
+- **C4. Per-symbol daily loss cap** — no more than 2 trades per stock per day if both are stops. (~15 lines)
+- **C5. Open-position correlation cap** — max 2 positions in stocks with ρ > 0.7 (need correlation matrix). Prevents sector-disguised concentration. (~50 lines)
+
+### D. Self-learning loop (use the data already collected)
+
+- **D1. Per-(symbol, setup, regime) win-rate score nudge** — after 50 trades total, query ChromaDB and ±0.3 score based on rolling 30-trade WR for that triple. Activates the dormant RAG read path. (~40 lines)
+- **D2. Symbol auto-blacklist** — any symbol with ≥ 3 trades AND < 30 % WR in rolling 30 → skip until weekly review. (~20 lines)
+- **D3. Per-hour learned multipliers** — EOD job writes `learned_hour_multipliers.json`; scoring reads next morning. Fully data-driven time-of-day weights. (~30 lines)
+- **D4. Self-critique on every closed trade** — T3 model EOD-batched returns `process_grade`/`would_take_again` JSON written to ChromaDB. Highest-information learning. (~50 lines)
+- **D5. Weekly proposed-multiplier diff** — auto-suggest regime × setup multiplier changes; human approves; A/B paper-validate before rollout. (~80 lines)
+
+### E. New setups (more shots on goal)
+
+- **E1. Bull Flag pattern** — impulse + tight 4–8 bar consolidation + flag-high break. The classic continuation. (~80 lines)
+- **E2. Gap-and-Go** — gap ≥ 2 % at open + holds first 3 bars + 5-min ORB break. Catches news-day movers. (~60 lines)
+- **E3. Double Bottom (W) reversal** — twice-tested support + breakout above the W's middle peak. (~50 lines)
+- **E4. SHORT-side detectors** — mirror of all 8 LONG setups for downtrending stocks. Doubles addressable opportunities. (~150 lines)
+
+### F. Operational polish (confidence + safety)
+
+- **F1. Boot reconciliation with broker** — pull open positions from Kite at boot, repair drift. Live-readiness gate. (~80 lines, INF-05)
+- **F2. Every-60s position reconciler** — broker truth ≠ SQLite → Telegram alert + repair. (~40 lines)
+- **F3. Order-status reconciler** — cancel stale unfilled orders within 30 s. Prevents zombie orders. (~30 lines)
+- **F4. Slippage telemetry** — record actual fill vs LTP per trade; show in dashboard. Validates Fix #16 assumption. (~30 lines)
+- **F5. Per-trade R:R logging** — already partial via pnl_r; expose in trade alerts. (~5 lines)
+
+### Recommended order to ship (highest impact first)
+
+1. **A1** volume veto for momentum BO (kills the #1 fakeout class)
+2. **B1** three-tier targets (smarter exits = more captured profit per win)
+3. **D1** per-(symbol,setup,regime) WR nudge (activates the dormant learning loop)
+4. **A6** score-based sizing (concentrate capital in higher-conviction trades)
+5. **A2** score decay over time (avoid entering aging signals)
+6. **B2** volatility-adaptive trail (the data-confirmed exit improvement)
+7. **C1** smart re-entry rule (more shots on bonafide setups)
+8. **A5** time-of-day score gates (data-driven; 9 IST has 50 % WR vs 12 IST 65 %)
+9. **D2** symbol auto-blacklist (kills the proven losers)
+10. **E1** bull flag (catches the second-leg of strong movers — file 04 analysis showed this)
+
+Ship one per session; verify on paper for 1–2 days before the next.
+
+---
+
+
 > **Status update 2026-04-28 — Fixes 1–7 deployed.** See `PROJECT_MEMORY.md` for the deployment table. Items closed below are marked `✅`.
 >
 > Closed in this cycle:
