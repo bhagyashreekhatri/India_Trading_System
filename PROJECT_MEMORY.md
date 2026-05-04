@@ -30,6 +30,7 @@
 | 20 | **15-min HTF trend filter** — `get_htf_trend()` classifies last 4 fifteen-min bars as up/down/neutral via HH-HL count. LONG entries vetoed when HTF is DOWN. Defensive `neutral` default on any data shortage | `data/kite_client.py`, `agents/crew.py` | up/down/neutral/short cases verified |
 | 21 | **Today-only VWAP/df after weekends** — `days=1` returned 0 bars on Mondays after weekends/holidays (Sun has no market data) → ALL stocks failed `len(df) ≥ 8` check → 0 setups. Now `days=3` + `_filter_to_today()` filter. Also fixes VWAP polluted by prior-session volume | `data/kite_client.py` | engine tests pass; observed log root cause was `few_candles=60/60` after weekend |
 | 22 | **A1 — Volume veto for momentum_breakout** — RVOL < 2.0 → reject. Real breakouts come on volume; 60% of low-volume "breakouts" fade. New constant `MOMENTUM_BO_MIN_RVOL=2.0` | `config/settings.py`, `agents/crew.py` | engine tests pass |
+| 23 | **A6 — Score-based sizing tiers** — risk scaled by grade: A++ ₹15k, A+ ₹11.25k, A ₹7.5k, B ₹3.75k. Concentrates capital in highest-conviction trades; combines multiplicatively with conservative-mode dampener | `config/settings.py`, `agents/crew.py` | size scaling verified |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).

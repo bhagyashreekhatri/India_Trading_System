@@ -13,7 +13,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 - **A3. Two-bar confirmation on momentum BO** — require the previous bar to also be green and close above the breakout level, not just the current. Drops 1-bar-fakeouts. (~10 lines)
 - **A4. Range expansion check** — last bar's range must be ≥ 1.3× the prior 5-bar mean range. Detects real momentum vs grinding chop. (~10 lines)
 - **A5. Time-of-day score gates** — data-driven: 9 IST gate +0.5 (loud noise hour), 10 IST gate +0.3, 12 IST gate -0.2 (best hour). Per Fix #04 analysis. (~15 lines)
-- **A6. Score-based sizing** — A++ trades full size, A+ = 75 %, A = 50 %, B = 25 %. Higher conviction → larger position. (~15 lines)
+- ✅ **A6. Score-based sizing** — Fix #23 deployed 2026-05-04. A++=₹15k / A+=₹11.25k / A=₹7.5k / B=₹3.75k risk per trade.
 - **A7. Bid-ask depth check** — top-of-book imbalance ≥ 1.5× in trade direction at entry. Detects real institutional flow. (~25 lines)
 - **A8. EMA-stack confirmation** — 5-EMA > 8-EMA > 13-EMA on the trigger bar for LONG entries. Adds higher-quality trend filter. (~20 lines)
 - **A9. Lunch-window gate dynamic** — after a 9 IST loss day, RAISE midday gate to 8.5 (trade only A+/A++). After a 9 IST win day, keep at 8.0. Adaptive risk. (~10 lines)

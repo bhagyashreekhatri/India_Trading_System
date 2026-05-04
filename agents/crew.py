@@ -48,7 +48,7 @@ from config.settings import (
     MAX_CONSECUTIVE_LOSSES, CONSERVATIVE_SIZE_PCT, MAX_POSITION_VALUE_PCT,
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
-    BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL,
+    BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL, SCORE_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
@@ -891,7 +891,10 @@ class TradingCrew:
 
             conservative = consec >= MAX_CONSECUTIVE_LOSSES
             multiplier   = CONSERVATIVE_SIZE_PCT if conservative else 1.0
-            risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier
+            # Fix #23 (A6) — score-based sizing tier (combines multiplicatively
+            # with conservative-mode dampener). A++ full, A+ 75%, A 50%, B 25%.
+            grade_tier   = SCORE_SIZE_TIERS.get(s.get("grade", ""), 0.5)
+            risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier * grade_tier
             qty          = floor(risk_amount / dist)
             # Cap 1: max 20% of capital per position (prevents 1 trade using all capital)
             max_pos_val  = CAPITAL * MAX_POSITION_VALUE_PCT

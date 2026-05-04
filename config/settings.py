@@ -64,6 +64,18 @@ MOMENTUM_BO_MIN_RVOL    = 2.0   # Fix #22 (A1) — hard floor for momentum_break
                                 # Real breakouts come on volume; without 2× RVOL,
                                 # 60% are fakeouts that get faded.
 
+# ─── Score-based sizing tiers (Fix #23 / A6) ─────────────────────────────────
+# Higher conviction → larger position. Scales the per-trade risk cap (and thus
+# qty). A++ = full, A+ = 75%, A = 50%, B = 25%. Combines multiplicatively with
+# CONSERVATIVE_SIZE_PCT after consec losses.
+SCORE_SIZE_TIERS = {
+    "A++": 1.00,
+    "A+":  0.75,
+    "A":   0.50,
+    "B":   0.25,
+    "C":   0.00,
+}
+
 # ─── Market breadth thresholds ───────────────────────────────────────────────
 BREADTH_BULLISH         = 0.65           # >65% stocks above VWAP → lean long
 BREADTH_BEARISH         = 0.40           # <40% → avoid new longs
