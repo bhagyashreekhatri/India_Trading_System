@@ -26,6 +26,7 @@ class KiteDataClient:
         self.kite = KiteConnect(api_key=KITE_API_KEY)
         self.kite.set_access_token(KITE_ACCESS_TOKEN)
         self._instrument_cache: dict = {}
+        self._pdh_pdl_cache: dict = {}   # (symbol, date_str) → (pdh, pdl)
         self._load_instruments()
 
     def _load_instruments(self):
@@ -178,6 +179,38 @@ class KiteDataClient:
         avg     = df["volume"].iloc[-22:-2].mean()   # 20 completed candles
         current = df["volume"].iloc[-2]               # last completed candle
         return round(current / avg, 2) if avg > 0 else None
+
+    # ── Previous-day high / low (Fix #17) ─────────────────────────────────────
+
+    def get_pdh_pdl(self, symbol: str) -> Optional[tuple[float, float]]:
+        """
+        Return (pdh, pdl) — yesterday's session high and low — used for the
+        scalper "magnet level" score boost. Cached per-day per-symbol so the
+        Kite call only happens once per session per stock.
+        Returns None if data unavailable (caller falls back to no nudge).
+        """
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        key = (symbol, today_str)
+        if key in self._pdh_pdl_cache:
+            return self._pdh_pdl_cache[key]
+
+        # Fetch last 3 days of daily candles; previous trading day = iloc[-2]
+        df = self.get_candles(symbol, interval="day", days=5)
+        if df is None or len(df) < 2:
+            self._pdh_pdl_cache[key] = None
+            return None
+        try:
+            prev = df.iloc[-2]
+            pdh = float(prev["high"])
+            pdl = float(prev["low"])
+            if pdh <= 0 or pdl <= 0 or pdl >= pdh:
+                self._pdh_pdl_cache[key] = None
+                return None
+            self._pdh_pdl_cache[key] = (pdh, pdl)
+            return (pdh, pdl)
+        except (KeyError, IndexError, ValueError):
+            self._pdh_pdl_cache[key] = None
+            return None
 
     # ── Bid-ask spread ────────────────────────────────────────────────────────
 

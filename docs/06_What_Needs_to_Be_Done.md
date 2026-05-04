@@ -22,19 +22,19 @@
 > - DEAD-01 remove dead `agents/*_agent.py` + `tools/{kite,news,chroma}_tools.py`; drop `crewai`/`langchain`
 > - DASH-03 Groq budget widget (counters already in `NewsClient.stats`)
 > - HTF-01 15-min higher-timeframe trend filter (reject counter-trend scalps)
-> - PDH-01 PDH/PDL levels — score boost on break above PDH
 > - LEAD-01 leaders watchlist (>3% + RVOL>2 + RS>1.5%) with relaxed proximity 1.5%
 > - NEWS-02 NewsAPI company-name aliases (currently "RELIANCE" misses "Reliance Industries")
-> - SLIP-01 simulate ₹0.05 entry / ₹0.10 stop slippage in cost calc (paper realism)
 > - KILL-LIVE-01 daily-loss kill switch tested in production (force synthetic loss)
 >
-> **Done in this cycle (15 fixes total):**
-> - ✅ Fix #1–#15 + dashboard TZ fix (see PROJECT_MEMORY.md table)
+> **Done in this cycle (17 fixes total):**
+> - ✅ Fix #1–#17 + dashboard TZ fix (see PROJECT_MEMORY.md table)
 > - ✅ 8 setups (was 6) — added TREND_PULLBACK + INSIDE_BAR_BREAK
 > - ✅ Daily-profit lockout (mirror of kill switch)
 > - ✅ Honest live fill prices (no more 20-min stale entries)
 > - ✅ Persisted regime column for accurate analytics
 > - ✅ Sector flow gating (top/weak sector boost/penalty)
+> - ✅ Paper slippage simulation (paper P&L now realistic)
+> - ✅ PDH break bonus (entry > prior-day high → +0.3 score nudge)
 
 
 > Comprehensive backlog of gaps, fixes, and improvements required to take this from "ran a 151-trade paper week" to "god-level scalper, live-ready". Each item has a priority (P0–P3), an effort estimate, and a target phase. The phase mapping aligns with file 07.

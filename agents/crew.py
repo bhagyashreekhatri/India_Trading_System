@@ -605,6 +605,22 @@ class TradingCrew:
                     elif boosted >= 5.0: comp.grade = Grade.B
                     else:                comp.grade = Grade.C
 
+                # ── PDH break bonus (Fix #17) ────────────────────────────────
+                # Previous day's high is a major magnet level. An entry above
+                # PDH on volume is a much higher-probability long than the
+                # same setup mid-range. PDL break for shorts (system is
+                # long-only today; PDL nudge dormant until SHORT-01).
+                pdh_nudge = 0.0
+                pdh_pdl = None
+                try:
+                    pdh_pdl = self.kite.get_pdh_pdl(sym)
+                except Exception:
+                    pdh_pdl = None
+                if pdh_pdl:
+                    pdh, _pdl = pdh_pdl
+                    if s.get("direction", "long") == "long" and s["entry_price"] > pdh:
+                        pdh_nudge = 0.3
+
                 # ── Sector flow nudge (Fix #15) ───────────────────────────────
                 # Trade WITH the day's flow. Top-3 sectors get a small boost,
                 # bottom-3 get a penalty (more likely to fall below the gate).
@@ -617,8 +633,11 @@ class TradingCrew:
                     sector_nudge = 0.3
                 elif sym_sector in weak_secs:
                     sector_nudge = -0.5
-                if sector_nudge != 0.0:
-                    new_score = max(0.0, min(10.0, comp.final_score + sector_nudge))
+                # Combine PDH + sector nudges in a single score update so we
+                # don't recompute grade twice.
+                total_nudge = sector_nudge + pdh_nudge
+                if total_nudge != 0.0:
+                    new_score = max(0.0, min(10.0, comp.final_score + total_nudge))
                     comp.final_score = new_score
                     from scoring.engine import Grade
                     if new_score >= 9.0:   comp.grade = Grade.A_PLUS_PLUS
@@ -661,6 +680,7 @@ class TradingCrew:
                             "confluence_count": s.get("confluence_count", 1),
                             "confluence_mult":  conf_mult,
                             "sector_nudge":     sector_nudge,
+                            "pdh_nudge":        pdh_nudge,
                         },
                         "rs_delta":    rs_delta,
                         "news_headline": headline,

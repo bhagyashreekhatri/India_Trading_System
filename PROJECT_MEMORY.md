@@ -23,6 +23,8 @@
 | 13 | **Honest fill prices** — refetch live LTP at order time (`_allocate`); refetch at TP1 / full-exit. Stops paper P&L being inflated by 20–25 min stale signal-bar prices | `agents/crew.py` | M&MFIN class bug — entry now matches live LTP |
 | 14 | **Persist regime as a column** on `positions`. ChromaDB write + EOD job both prefer the persisted regime; substring parser is fallback only for legacy rows | `memory/trade_state.py`, `agents/crew.py`, `jobs/eod_job.py` | schema migrated; new entries write regime |
 | 15 | **Sector flow gating** — top-3 sectors get +0.3 score boost; weak-3 get -0.5 penalty. Trade with the flow, not against it | `agents/crew.py` | uses breadth_cache top/weak sectors; saved in score_breakdown |
+| 16 | **Paper-mode slippage simulation** — 5bps entry / 10bps stop / 3bps target worsens paper fills to model live broker reality. Auto-skipped in live mode | `config/settings.py`, `agents/crew.py` | helper `_apply_paper_slippage`; applied in `_allocate`, `_partial_exit_tp1`, `_full_exit` |
+| 17 | **PDH/PDL scoring boost** — entry > previous day's high earns +0.3 score nudge. Cached per-day per-symbol so only one Kite call per stock per session | `data/kite_client.py`, `agents/crew.py` | `get_pdh_pdl()`; saved as `pdh_nudge` in score_breakdown |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).
