@@ -76,6 +76,24 @@ SCORE_SIZE_TIERS = {
     "C":   0.00,
 }
 
+# ─── Time-of-day score gate nudges (Fix #24 / A5) ────────────────────────────
+# From file 04 trade-log analysis (151 trades, 6 sessions):
+#   Hour 12 IST: 64.7% WR, 76.7% of total P&L → BEST window
+#   Hour 11 IST: 72.7% WR, +₹16k → strong
+#   Hour 13 IST: 70%   WR, +₹2.5k → fine
+#   Hour 14 IST: 54.5% WR
+#   Hour 9  IST: 50.9% WR, 38% of trades, only 5% of P&L → noisy hour
+#   Hour 10 IST: 58.8% WR, only losing hour
+# Nudges applied to MIN_SCORE_ENTRY at the top of _score_signals.
+HOUR_GATE_NUDGES = {
+    9:  +0.5,   # Loud noise — raise the bar
+    10: +0.3,   # Only-losing hour — raise the bar
+    11: -0.0,   # Solid — neutral
+    12: -0.2,   # Best hour — lower the bar
+    13:  0.0,
+    14:  0.0,
+}
+
 # ─── Market breadth thresholds ───────────────────────────────────────────────
 BREADTH_BULLISH         = 0.65           # >65% stocks above VWAP → lean long
 BREADTH_BEARISH         = 0.40           # <40% → avoid new longs

@@ -49,6 +49,7 @@ from config.settings import (
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
     BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL, SCORE_SIZE_TIERS,
+    HOUR_GATE_NUDGES,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
@@ -513,6 +514,15 @@ class TradingCrew:
         if consec >= MAX_CONSECUTIVE_LOSSES:
             min_score = max(min_score, MIN_SCORE_ENTRY_CONSERVATIVE)
             print(f"[Scorer] Conservative mode — {consec} consecutive losses, threshold={min_score}")
+
+        # ── Time-of-day nudge (Fix #24 / A5) ─────────────────────────────────
+        # Adjust the gate by hour-of-day per the 151-trade analysis. 9 & 10 IST
+        # raise the bar (noisy / losing); 12 IST lowers it (best hour).
+        cur_hour = _now_ist().hour
+        hour_nudge = HOUR_GATE_NUDGES.get(cur_hour, 0.0)
+        if hour_nudge != 0.0:
+            min_score = max(0.0, min_score + hour_nudge)
+            print(f"[Scorer] Hour {cur_hour:02d} IST nudge {hour_nudge:+.1f} → threshold {min_score:.1f}")
 
         # Write effective threshold to status file so dashboard can display it
         conservative = consec >= MAX_CONSECUTIVE_LOSSES or self._is_midday()
