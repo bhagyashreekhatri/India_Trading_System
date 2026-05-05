@@ -29,7 +29,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 - **B6. Thesis-broken exit** — VWAP-reclaim/pullback trades exit immediately if close goes back below VWAP with body. Already partly in the playbook, not coded. (~20 lines)
 - **B7. Sector-roll exit** — if the trade's sector loses top-3 status mid-trade, tighten trail by 30 %. Catches sector rotation against position. (~15 lines)
 - **B8. News-spike exit** — if VIX or Nifty rapid spike > 1 % in 5 min, halve all open positions. (~20 lines)
-- **B9. End-of-day partial unwind** — start exiting (50 %) at 14:30, all flat by 14:55 (vs current 15:00 hard close). Smoother liquidity. (~10 lines)
+- ✅ **B9. End-of-day partial unwind** — Fix #34 deployed 2026-05-04. After 14:45, exit non-TP1 positions; TP1-hit run to 15:00.
 
 ### C. Risk / capital discipline
 

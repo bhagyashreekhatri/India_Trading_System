@@ -1082,6 +1082,19 @@ class TradingCrew:
                 self._full_exit(p, curr, "eod_exit")
                 continue
 
+            # ── EOD partial unwind (Fix #34 / B9) ─────────────────────────────
+            # After 14:45 (no-new-entry mark), close positions that still haven't
+            # hit TP1. They've had hours to develop; they won't run in the last
+            # 15 min. Frees capital and avoids the 15:00 dump on dead trades.
+            # TP1-hit positions keep running to 15:00 (already de-risked at BE).
+            try:
+                partial_t = _parse_time(NO_NEW_ENTRY_AFTER)   # 14:45
+                if now.time() >= partial_t and not p.tp1_hit:
+                    self._full_exit(p, curr, "eod_partial_unwind")
+                    continue
+            except Exception:
+                pass
+
             # ── SL hit (distinguish initial from trailed) ────────────────────
             if curr <= p.stop_loss:
                 # If stop has been moved above initial_sl, it's a trailing exit
