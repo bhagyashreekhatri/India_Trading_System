@@ -76,6 +76,17 @@ SCORE_SIZE_TIERS = {
     "C":   0.00,
 }
 
+# ─── Loser-streak gradient dampener (Fix #31 / C2) ───────────────────────────
+# Smooth de-risking — replaces the binary cliff at 3 losses (was 1.0 → 0.5).
+# Index = consecutive_losses; values clamp at 4+ losses.
+LOSER_STREAK_SIZE_TIERS = [
+    1.00,   # 0 losses
+    0.85,   # 1 loss
+    0.70,   # 2 losses
+    0.50,   # 3 losses (matches old CONSERVATIVE_SIZE_PCT)
+    0.30,   # 4+ losses
+]
+
 # ─── Time-of-day score gate nudges (Fix #24 / A5) ────────────────────────────
 # From file 04 trade-log analysis (151 trades, 6 sessions):
 #   Hour 12 IST: 64.7% WR, 76.7% of total P&L → BEST window

@@ -49,7 +49,7 @@ from config.settings import (
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
     BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL, SCORE_SIZE_TIERS,
-    HOUR_GATE_NUDGES,
+    HOUR_GATE_NUDGES, LOSER_STREAK_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
@@ -912,8 +912,11 @@ class TradingCrew:
                 print(f"[Allocator] {sym} live LTP ≤ SL — skip")
                 continue
 
-            conservative = consec >= MAX_CONSECUTIVE_LOSSES
-            multiplier   = CONSERVATIVE_SIZE_PCT if conservative else 1.0
+            # Fix #31 (C2) — gradient dampener replaces binary CONSERVATIVE cliff.
+            # Smoothly de-risks 0→1→2→3→4+ consec losses.
+            tier_idx     = min(consec, len(LOSER_STREAK_SIZE_TIERS) - 1)
+            multiplier   = LOSER_STREAK_SIZE_TIERS[tier_idx]
+            conservative = consec >= MAX_CONSECUTIVE_LOSSES   # kept for downstream flags
             # Fix #23 (A6) — score-based sizing tier (combines multiplicatively
             # with conservative-mode dampener). A++ full, A+ 75%, A 50%, B 25%.
             grade_tier   = SCORE_SIZE_TIERS.get(s.get("grade", ""), 0.5)

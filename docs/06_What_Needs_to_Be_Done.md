@@ -34,7 +34,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 ### C. Risk / capital discipline
 
 - ✅ **C1. Re-entry rule** — Fix #26 deployed 2026-05-04. 2nd strike at half size; 2/day cap.
-- **C2. Loser-streak size dampener** — after each consecutive loss, multiply next size by 0.8 (compounding). Reset on a win. Already partial via consec-loss conservative mode. (~10 lines)
+- ✅ **C2. Loser-streak size dampener** — Fix #31 deployed 2026-05-04. Tiered 1.0/0.85/0.70/0.50/0.30 by consec losses.
 - **C3. Winner-streak conservative shift** — after 3 wins in a row, raise score gate +0.3 for next 30 min. Counter regression-to-mean. (~10 lines)
 - **C4. Per-symbol daily loss cap** — no more than 2 trades per stock per day if both are stops. (~15 lines)
 - **C5. Open-position correlation cap** — max 2 positions in stocks with ρ > 0.7 (need correlation matrix). Prevents sector-disguised concentration. (~50 lines)
