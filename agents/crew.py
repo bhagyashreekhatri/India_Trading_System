@@ -927,6 +927,30 @@ class TradingCrew:
             s["tp1_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R1)
             s["tp2_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R2)
 
+            # ── Score decay on aging signals (Fix #36 / A2) ──────────────────
+            # If the signal is older than 5 min, the bar that produced it is
+            # stale relative to the current tape. Drop final_score by 0.5 and
+            # re-check the gate.
+            try:
+                det_iso = s.get("detected_at")
+                if det_iso:
+                    det_dt = datetime.fromisoformat(det_iso)
+                    if det_dt.tzinfo is None:
+                        det_dt = det_dt.replace(tzinfo=IST)
+                    age_min = (_now_ist() - det_dt).total_seconds() / 60.0
+                    if age_min > 5.0:
+                        decay = 0.5
+                        old_score = s.get("final_score", 0)
+                        s["final_score"] = max(0.0, old_score - decay)
+                        print(f"[Allocator] {sym} signal aged {age_min:.1f}m — "
+                              f"score decay {old_score:.1f} → {s['final_score']:.1f}")
+                        # Re-check gate; if it now fails, skip
+                        if s["final_score"] < MIN_SCORE_ENTRY:
+                            print(f"[Allocator] {sym} post-decay score below gate — skip")
+                            continue
+            except Exception:
+                pass
+
             # Position sizing (uses the corrected entry)
             dist  = s["entry_price"] - s["stop_loss"]
             if dist <= 0:

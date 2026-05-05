@@ -9,7 +9,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 ### A. Entry quality (win-rate boosters)
 
 - ✅ **A1. Volume confirmation veto for momentum_breakout** — Fix #22 deployed 2026-05-04. RVOL ≥ 2.0 required.
-- **A2. Score decay over time** — signal score drops 0.5 if entry doesn't fire within 5 min of detection (price ran or quality stale). Avoid entering on aging signals. (~15 lines)
+- ✅ **A2. Score decay over time** — Fix #36 deployed 2026-05-04. Signal age >5 min → score −0.5, re-check gate.
 - ✅ **A3. Two-bar confirmation on momentum BO** — Fix #30 deployed 2026-05-04. prior bar must also be green.
 - ✅ **A4. Range expansion check** — Fix #29 deployed 2026-05-04. momentum_breakout requires range ≥ 1.3× prev5 mean.
 - ✅ **A5. Time-of-day score gates** — Fix #24 deployed 2026-05-04.

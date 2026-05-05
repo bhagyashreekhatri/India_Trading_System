@@ -98,6 +98,8 @@ def _make_signal(
     sl_t    = _round_down_tick(sl, TICK_SIZE)
     tp1     = _calc_tp(entry_t, sl_t, TARGET_R1)
     tp2     = _calc_tp(entry_t, sl_t, TARGET_R2)
+    # Fix #36 (A2) — stamp IST detection time for the score-decay check.
+    detected_at_iso = datetime.now(IST).isoformat()
     return {
         "symbol":           symbol,
         "setup_type":       setup_type,
@@ -114,6 +116,7 @@ def _make_signal(
         "sector":           get_sector(symbol),
         "reason":           reason,
         "atr":              round(atr, 2),
+        "detected_at":      detected_at_iso,   # Fix #36 (A2)
     }
 
 

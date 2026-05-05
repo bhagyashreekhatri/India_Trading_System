@@ -43,6 +43,7 @@
 | 33 | **C3 — Winner-streak gate shift** — after 3 wins in a row today, score gate raised +0.3. Counters regression-to-mean. New `get_consecutive_wins()` in trade_state | `memory/trade_state.py`, `agents/crew.py` | engine tests pass |
 | 34 | **B9 — EOD partial unwind** — after 14:45 (NO_NEW_ENTRY_AFTER), force-exit any position still on initial SL (no TP1 hit). TP1-hit positions keep running to 15:00. Frees capital and avoids the 15:00 dump on dead trades | `agents/crew.py` | engine tests pass; new exit reason `eod_partial_unwind` |
 | 35 | **A9 — Dynamic lunch-window gate** — midday gate raised to 8.5 (from 8.0) if today_pnl < 0 by 13:00. Adapts risk to morning's tape | `agents/crew.py` | engine tests pass |
+| 36 | **A2 — Score decay on aging signals** — `_make_signal` stamps `detected_at` IST. In `_allocate`, if age > 5 min → final_score −0.5 and re-check gate. Defensive against signal queueing across ticks | `tools/pattern_tools.py`, `agents/crew.py` | engine tests pass |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).
