@@ -35,6 +35,7 @@
 | 25 | **B2 — Volatility-adaptive trail** — `_try_trail_sl` multiplier now context-aware: 0.7×ATR in CHOPPY regime (tighter), 0.4×ATR when RVOL≥2 (looser, let hot trades run), else 0.5×ATR | `agents/crew.py` | engine tests pass |
 | 26 | **C1 — Smart re-entry rule** — after 30-min cooldown, allow 2nd entry on same stock at 50% size; hard cap 2/day. New `count_today_trades_on()` in trade_state | `memory/trade_state.py`, `agents/crew.py` | engine tests pass |
 | 27 | **D2 — Symbol auto-blacklist** — skip any symbol with ≥3 closed trades AND <30% WR in rolling 30. Kills proven losers (CESC, CEATLTD, JINDALSTEL et al from file 04). New `is_symbol_blacklisted()` in trade_state | `memory/trade_state.py`, `agents/crew.py` | engine tests pass |
+| 28 | **B3 — Aggressive trail past +1.5R** — once unrealised pnl_r ≥ 1.5, mult overrides to 0.3×ATR (tightest). Locks more of big winners | `agents/crew.py` | engine tests pass |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).

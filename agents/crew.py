@@ -1203,6 +1203,17 @@ class TradingCrew:
             except Exception:
                 pass
 
+            # Fix #28 (B3) — aggressive trail past +1.5R: lock more of the move.
+            # Once unrealised PnL ≥ 1.5R, override mult to 0.3 (tightest).
+            try:
+                sl_dist = abs(p.entry_price - (p.initial_sl or p.stop_loss)) or 0.01
+                pnl_r_now = (curr - p.entry_price) / sl_dist if p.direction == "long" \
+                            else (p.entry_price - curr) / sl_dist
+                if pnl_r_now >= 1.5:
+                    mult = min(mult, 0.3)
+            except Exception:
+                pass
+
             new_sl  = _round_down_tick(curr - atr * mult, TICK_SIZE)
 
             if new_sl > p.stop_loss:
