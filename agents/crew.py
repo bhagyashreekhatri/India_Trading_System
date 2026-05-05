@@ -502,12 +502,25 @@ class TradingCrew:
         bs      = breadth_data.get("breadth_score", 0.6)
 
         # Base threshold: use dashboard value if provided, else midday/default logic
+        # Fix #35 (A9) — if today_pnl is negative by lunch, raise midday gate to
+        # 8.5 (extra strict). Adapts risk to the morning's tape.
+        midday_gate = MIN_SCORE_ENTRY_CONSERVATIVE
+        if self._is_midday():
+            try:
+                today_pnl_now = self.state.get_today_pnl()
+                if today_pnl_now < 0:
+                    midday_gate = max(midday_gate, 8.5)
+                    print(f"[Scorer] Lunch dynamic — morning P&L ₹{today_pnl_now:+,.0f} negative, "
+                          f"midday gate raised to {midday_gate}")
+            except Exception:
+                pass
+
         if min_score is None:
-            min_score = MIN_SCORE_ENTRY_CONSERVATIVE if self._is_midday() else MIN_SCORE_ENTRY
+            min_score = midday_gate if self._is_midday() else MIN_SCORE_ENTRY
         else:
-            # Midday: never go below conservative threshold even if dashboard says lower
+            # Midday: never go below the (possibly-raised) midday gate
             if self._is_midday():
-                min_score = max(min_score, MIN_SCORE_ENTRY_CONSERVATIVE)
+                min_score = max(min_score, midday_gate)
 
         # Also raise threshold if consecutive losses ≥ 3
         consec = self.state.get_consecutive_losses()

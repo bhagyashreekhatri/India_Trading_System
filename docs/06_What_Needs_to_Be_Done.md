@@ -16,7 +16,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 - ✅ **A6. Score-based sizing** — Fix #23 deployed 2026-05-04. A++=₹15k / A+=₹11.25k / A=₹7.5k / B=₹3.75k risk per trade.
 - **A7. Bid-ask depth check** — top-of-book imbalance ≥ 1.5× in trade direction at entry. Detects real institutional flow. (~25 lines)
 - **A8. EMA-stack confirmation** — 5-EMA > 8-EMA > 13-EMA on the trigger bar for LONG entries. Adds higher-quality trend filter. (~20 lines)
-- **A9. Lunch-window gate dynamic** — after a 9 IST loss day, RAISE midday gate to 8.5 (trade only A+/A++). After a 9 IST win day, keep at 8.0. Adaptive risk. (~10 lines)
+- ✅ **A9. Lunch-window gate dynamic** — Fix #35 deployed 2026-05-04. Midday gate → 8.5 if today_pnl<0, else 8.0.
 - **A10. Earnings calendar veto** — skip stocks with announcement in next 60 min OR last 60 min (post-news vol drag). Needs external calendar source. (~30 lines)
 
 ### B. Exit quality (R-multiple boosters)
