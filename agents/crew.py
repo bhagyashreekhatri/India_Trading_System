@@ -524,6 +524,14 @@ class TradingCrew:
             min_score = max(0.0, min_score + hour_nudge)
             print(f"[Scorer] Hour {cur_hour:02d} IST nudge {hour_nudge:+.1f} → threshold {min_score:.1f}")
 
+        # ── Winner-streak gate shift (Fix #33 / C3) ──────────────────────────
+        # After 3 wins in a row, raise the gate +0.3 to counter regression-to-mean.
+        # Mirror of consec-loss conservative shift on the upside.
+        consec_wins = self.state.get_consecutive_wins()
+        if consec_wins >= 3:
+            min_score += 0.3
+            print(f"[Scorer] Winner streak {consec_wins} — gate raised to {min_score:.1f}")
+
         # Write effective threshold to status file so dashboard can display it
         conservative = consec >= MAX_CONSECUTIVE_LOSSES or self._is_midday()
         try:

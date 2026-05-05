@@ -309,6 +309,27 @@ class TradeStateManager:
                 (f"{today}%",)).fetchone()[0]
         return float(result)
 
+    def get_consecutive_wins(self) -> int:
+        """
+        Fix #33 (C3) — count consecutive wins ending with the most recent
+        closed trade today. Reset on any loss. Used to raise score gate after
+        a winning streak (counter regression-to-mean).
+        """
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT status FROM positions WHERE entry_time LIKE ? "
+                "AND status != 'open' ORDER BY exit_time DESC LIMIT 10",
+                (f"{today}%",)
+            ).fetchall()
+        streak = 0
+        for r in rows:
+            if r["status"] == "closed_win":
+                streak += 1
+            else:
+                break
+        return streak
+
     def get_consecutive_losses(self) -> int:
         today = date.today().isoformat()
         with self._conn() as conn:
