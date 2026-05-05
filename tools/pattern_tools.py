@@ -581,14 +581,25 @@ def _detect_setups_multi(
 
     # ── 6. Momentum Breakout ─────────────────────────────────────────────────
     recent_high = float(df["high"].iloc[-7:-1].max())
+    # Fix #29 (A4) — range expansion: trigger bar must show momentum, not fade.
+    # Require current range ≥ 1.3× mean of prior 5 bars' ranges.
+    try:
+        prev5_ranges = (df["high"].iloc[-6:-1] - df["low"].iloc[-6:-1])
+        mean_prev_range = float(prev5_ranges.mean()) if not prev5_ranges.empty else 0.0
+        cur_range = float(last["high"] - last["low"])
+        range_expanded = mean_prev_range > 0 and cur_range >= 1.3 * mean_prev_range
+    except Exception:
+        range_expanded = True   # fail-open if math fails
     if (last["close"] > recent_high
             and last["close"] > vwap
             and br >= 0.4
-            and cp >= 0.6):
+            and cp >= 0.6
+            and range_expanded):
         sl = _sl_from_atr(round(last["close"], 2), atr)
         matches.append(_make_signal(symbol, SetupType.MOMENTUM_BREAKOUT, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Momentum breakout above recent high {recent_high:.2f} and VWAP"))
+                            f"Momentum breakout above {recent_high:.2f} & VWAP "
+                            f"(range {cur_range:.2f} ≥ 1.3× prev5 {mean_prev_range:.2f})"))
 
     # ── 7. Range Breakout ────────────────────────────────────────────────────
     rc      = df.iloc[-9:-1]
