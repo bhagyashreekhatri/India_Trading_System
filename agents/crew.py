@@ -1100,22 +1100,23 @@ class TradingCrew:
             if p.tp1_hit and TRAILING_SL_ENABLED:
                 self._try_trail_sl(p, curr)
 
-            # ── Stall detection: >45 min, <0.15R move, not tp1 ───────────────
-            # Give trades enough time to breathe — 3 min ticks mean we check
-            # every 3 min, so 45 min = 15 ticks before declaring stall.
-            # Threshold 0.15R: only exit if truly stuck, not just slow.
+            # ── Stall detection — tiered (Fix #32 / B5) ──────────────────────
+            # Tier 1 (early): 25 min + pnl_r ∈ [-0.5, +0.3] → exit (no momentum
+            #   either way — capital better used elsewhere).
+            # Tier 2 (severe): 45 min + |pnl_r| ≤ 0.3 → exit (truly stuck, was
+            #   ≤0.15R which almost never fired).
+            # `_entry_dt_aware()` (Fix #1) keeps elapsed math correct on UTC host.
             if not p.tp1_hit and p.entry_time:
                 try:
-                    # entry_time is stored naive by datetime.now().isoformat() in
-                    # state.open_position(). On a UTC-host server this is UTC; on
-                    # an IST-host server it's IST. Use _entry_dt_aware() to detect
-                    # and normalise to IST so elapsed math is correct on either host.
                     entry_dt = _entry_dt_aware(p.entry_time)
                     elapsed  = (now - entry_dt).total_seconds() / 60
                     sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
                     pnl_r    = (curr - p.entry_price) / sl_dist if p.direction == "long" \
                                else (p.entry_price - curr) / sl_dist
-                    if elapsed >= 45 and abs(pnl_r) <= 0.15:
+                    if elapsed >= 25 and -0.5 <= pnl_r <= 0.3:
+                        self._full_exit(p, curr, "stalled_no_movement")
+                        continue
+                    if elapsed >= 45 and abs(pnl_r) <= 0.3:
                         self._full_exit(p, curr, "stalled_no_movement")
                         continue
                 except Exception:

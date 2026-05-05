@@ -25,7 +25,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 - ✅ **B2. Volatility-adaptive trail** — Fix #25 deployed 2026-05-04. 0.4×ATR hot, 0.7×ATR chop, 0.5×ATR default.
 - ✅ **B3. Aggressive trail after +1.5R** — Fix #28 deployed 2026-05-04. mult overrides to 0.3×ATR.
 - **B4. Anchored-VWAP exit** — exit if price closes below the AVWAP from the breakout bar (long-side). High-precision invalidation. (~20 lines)
-- **B5. Time-stop tiers** — ≤ 0.3R after 30 min → exit half; ≤ 0.5R after 45 min → exit full. Faster than current 45-min/0.15R rule. (~15 lines)
+- ✅ **B5. Time-stop tiers** — Fix #32 deployed 2026-05-04. Tier 1: 25min+[-0.5,+0.3]; Tier 2: 45min+|R|≤0.3.
 - **B6. Thesis-broken exit** — VWAP-reclaim/pullback trades exit immediately if close goes back below VWAP with body. Already partly in the playbook, not coded. (~20 lines)
 - **B7. Sector-roll exit** — if the trade's sector loses top-3 status mid-trade, tighten trail by 30 %. Catches sector rotation against position. (~15 lines)
 - **B8. News-spike exit** — if VIX or Nifty rapid spike > 1 % in 5 min, halve all open positions. (~20 lines)
