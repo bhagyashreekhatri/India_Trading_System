@@ -582,7 +582,6 @@ def _detect_setups_multi(
     # ── 6. Momentum Breakout ─────────────────────────────────────────────────
     recent_high = float(df["high"].iloc[-7:-1].max())
     # Fix #29 (A4) — range expansion: trigger bar must show momentum, not fade.
-    # Require current range ≥ 1.3× mean of prior 5 bars' ranges.
     try:
         prev5_ranges = (df["high"].iloc[-6:-1] - df["low"].iloc[-6:-1])
         mean_prev_range = float(prev5_ranges.mean()) if not prev5_ranges.empty else 0.0
@@ -590,11 +589,18 @@ def _detect_setups_multi(
         range_expanded = mean_prev_range > 0 and cur_range >= 1.3 * mean_prev_range
     except Exception:
         range_expanded = True   # fail-open if math fails
+    # Fix #30 (A3) — two-bar confirmation: prior bar must also be green.
+    # Filters single-bar pops that come after red-bar sequences (bear traps).
+    try:
+        prev_green = float(prev["close"]) > float(prev["open"])
+    except Exception:
+        prev_green = False
     if (last["close"] > recent_high
             and last["close"] > vwap
             and br >= 0.4
             and cp >= 0.6
-            and range_expanded):
+            and range_expanded
+            and prev_green):
         sl = _sl_from_atr(round(last["close"], 2), atr)
         matches.append(_make_signal(symbol, SetupType.MOMENTUM_BREAKOUT, "long",
                             round(last["close"], 2), sl, atr, current, br, cp,

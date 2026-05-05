@@ -10,7 +10,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 
 - ✅ **A1. Volume confirmation veto for momentum_breakout** — Fix #22 deployed 2026-05-04. RVOL ≥ 2.0 required.
 - **A2. Score decay over time** — signal score drops 0.5 if entry doesn't fire within 5 min of detection (price ran or quality stale). Avoid entering on aging signals. (~15 lines)
-- **A3. Two-bar confirmation on momentum BO** — require the previous bar to also be green and close above the breakout level, not just the current. Drops 1-bar-fakeouts. (~10 lines)
+- ✅ **A3. Two-bar confirmation on momentum BO** — Fix #30 deployed 2026-05-04. prior bar must also be green.
 - ✅ **A4. Range expansion check** — Fix #29 deployed 2026-05-04. momentum_breakout requires range ≥ 1.3× prev5 mean.
 - ✅ **A5. Time-of-day score gates** — Fix #24 deployed 2026-05-04.
 - ✅ **A6. Score-based sizing** — Fix #23 deployed 2026-05-04. A++=₹15k / A+=₹11.25k / A=₹7.5k / B=₹3.75k risk per trade.
