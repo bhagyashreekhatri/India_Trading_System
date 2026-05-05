@@ -820,6 +820,12 @@ class TradingCrew:
             if any(p.symbol == sym for p in open_pos):
                 continue
 
+            # ── Symbol auto-blacklist (Fix #27 / D2) ─────────────────────────
+            # Skip systematically-bad names (≥3 trades, <30% WR rolling-30).
+            if self.state.is_symbol_blacklisted(sym):
+                print(f"[Allocator] {sym} auto-blacklisted (poor rolling-30 WR) — skip")
+                continue
+
             # ── Cooldown + smart re-entry (Fix #26 / C1) ────────────────────
             # Hard cap: max 2 trades per stock per day.
             strikes_today = self.state.count_today_trades_on(sym)

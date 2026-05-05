@@ -410,6 +410,28 @@ class TradeStateManager:
         sorted_stocks = sorted(stock_pnl.items(), key=lambda x: x[1], reverse=True)
         return [{"symbol":s,"total_pnl":round(p,0)} for s,p in sorted_stocks[:top_n]]
 
+    def is_symbol_blacklisted(self, symbol: str,
+                              min_trades: int = 3,
+                              min_winrate: float = 0.30,
+                              lookback: int = 30) -> bool:
+        """
+        Fix #27 (D2) — auto-blacklist proven losers.
+        Returns True if the symbol has at least `min_trades` closed trades in
+        the last `lookback` closed trades AND its win-rate on those is below
+        `min_winrate`. Limits exposure to systematically-bad names.
+        """
+        with self._conn() as conn:
+            rows = conn.execute("""
+                SELECT status FROM positions
+                WHERE symbol = ? AND status != 'open'
+                ORDER BY exit_time DESC LIMIT ?
+            """, (symbol, lookback)).fetchall()
+        if len(rows) < min_trades:
+            return False
+        wins = sum(1 for r in rows if r["status"] == "closed_win")
+        wr = wins / len(rows)
+        return wr < min_winrate
+
     def count_today_trades_on(self, symbol: str) -> int:
         """Fix #26 (C1) — # of trades opened on `symbol` today (any status)."""
         today = date.today().isoformat()

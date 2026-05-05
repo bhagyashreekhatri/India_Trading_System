@@ -42,7 +42,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 ### D. Self-learning loop (use the data already collected)
 
 - **D1. Per-(symbol, setup, regime) win-rate score nudge** — after 50 trades total, query ChromaDB and ±0.3 score based on rolling 30-trade WR for that triple. Activates the dormant RAG read path. (~40 lines)
-- **D2. Symbol auto-blacklist** — any symbol with ≥ 3 trades AND < 30 % WR in rolling 30 → skip until weekly review. (~20 lines)
+- ✅ **D2. Symbol auto-blacklist** — Fix #27 deployed 2026-05-04. ≥3 trades & <30% WR rolling-30 → skip.
 - **D3. Per-hour learned multipliers** — EOD job writes `learned_hour_multipliers.json`; scoring reads next morning. Fully data-driven time-of-day weights. (~30 lines)
 - **D4. Self-critique on every closed trade** — T3 model EOD-batched returns `process_grade`/`would_take_again` JSON written to ChromaDB. Highest-information learning. (~50 lines)
 - **D5. Weekly proposed-multiplier diff** — auto-suggest regime × setup multiplier changes; human approves; A/B paper-validate before rollout. (~80 lines)
