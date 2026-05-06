@@ -175,6 +175,9 @@ class TradingCrew:
         # _detect_breadth so breadth uses real VWAP (Fix #8) instead of the
         # change_pct proxy. Cleared at the start of every tick.
         self._vwap_cache: dict[str, float] = {}
+        # Fix #39 — per-tick rejection counters (which gate killed each candidate).
+        # Cleared at the start of every tick; printed at end.
+        self._reject_counts: dict[str, int] = {}
         # Clear yesterday's watchlist so dashboard shows only today's signals
         self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
@@ -185,6 +188,7 @@ class TradingCrew:
     def run_tick(self, min_score: float = None) -> dict:
         self._tick += 1
         self._vwap_cache.clear()   # Fix #8 — fresh VWAPs per tick
+        self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
         now = _now_ist()
         print(f"\n{'='*60}")
         print(f"[Crew] TICK #{self._tick} — {now.strftime('%H:%M:%S IST')}")
@@ -236,6 +240,12 @@ class TradingCrew:
         self._allocate(scored)
 
         return self._tick_summary(len(active), len(setups), len(scored))
+
+    # ── Rejection telemetry (Fix #39) ────────────────────────────────────────
+
+    def _rej(self, gate: str):
+        """Increment per-tick rejection counter — tells us which gate kills trades."""
+        self._reject_counts[gate] = self._reject_counts.get(gate, 0) + 1
 
     # ── Time gate ─────────────────────────────────────────────────────────────
 
@@ -573,7 +583,7 @@ class TradingCrew:
                         and vol_ratio < MOMENTUM_BO_MIN_RVOL):
                     print(f"[Scorer] {sym} momentum_breakout RVOL={vol_ratio:.2f} "
                           f"< {MOMENTUM_BO_MIN_RVOL} — fakeout risk, skip")
-                    continue
+                    self._rej("momentum_low_volume"); continue
 
                 # News (Groq LLM — this is the ONLY LLM call)
                 has_news, news_score, catalyst, headline = self._get_news(sym)
@@ -731,6 +741,9 @@ class TradingCrew:
                 elif comp.final_score >= MIN_SCORE_WATCHLIST:
                     # B-grade — add to watchlist
                     self._add_watchlist(sym, s, comp.final_score, result.reason)
+                    self._rej("score_below_gate_to_watchlist")
+                else:
+                    self._rej("score_below_watchlist")
 
             except Exception as e:
                 print(f"[Scorer] Error on {sym}: {e}")
@@ -839,47 +852,39 @@ class TradingCrew:
 
             # Already in this stock
             if any(p.symbol == sym for p in open_pos):
-                continue
+                self._rej("already_open"); continue
 
             # ── Symbol auto-blacklist (Fix #27 / D2) ─────────────────────────
-            # Skip systematically-bad names (≥3 trades, <30% WR rolling-30).
             if self.state.is_symbol_blacklisted(sym):
                 print(f"[Allocator] {sym} auto-blacklisted (poor rolling-30 WR) — skip")
-                continue
+                self._rej("blacklisted"); continue
 
             # ── Cooldown + smart re-entry (Fix #26 / C1) ────────────────────
-            # Hard cap: max 2 trades per stock per day.
             strikes_today = self.state.count_today_trades_on(sym)
             if strikes_today >= 2:
                 print(f"[Allocator] {sym} 2 strikes used today — skip")
-                continue
+                self._rej("max_strikes"); continue
             if self.state.is_in_cooldown(sym, 30):
                 print(f"[Allocator] {sym} in 30-min cooldown — skip")
-                continue
-            # Track for sizing (second strike → half size)
+                self._rej("cooldown"); continue
             second_strike = (strikes_today == 1)
 
             # Sector cap
             sec_count = sum(1 for p in open_pos if get_sector(p.symbol) == sector)
             if sec_count >= MAX_SAME_SECTOR_POSITIONS:
                 print(f"[Allocator] {sym} sector {sector} full — skip")
-                continue
+                self._rej("sector_full"); continue
 
             # ── Fix #13 — fetch FRESH LTP at order time ───────────────────
-            # The signal price (s["entry_price"]) is the close of the bar that
-            # produced the setup, which may be 3–25 minutes stale by the time
-            # we get here. Stamping that as the fill price overstates paper
-            # P&L and won't match live execution. Refetch live LTP, validate
-            # proximity against it, then USE THE LIVE LTP as the actual fill.
             try:
                 live_q = self.kite.get_quotes([sym])
                 live_ltp = float(live_q.get(sym, {}).get("last_price", 0) or 0)
             except Exception as e:
                 print(f"[Allocator] {sym} live quote failed ({e}) — skip")
-                continue
+                self._rej("live_quote_fail"); continue
             if live_ltp <= 0:
                 print(f"[Allocator] {sym} no live LTP — skip")
-                continue
+                self._rej("live_ltp_zero"); continue
 
             signal_px = float(s["entry_price"])
             drift = abs(live_ltp - signal_px) / signal_px if signal_px > 0 else 1.0
@@ -901,7 +906,7 @@ class TradingCrew:
                 tag = " LEADER" if is_leader else ""
                 print(f"[Allocator] {sym} drifted {drift*100:.2f}% > {prox_max*100:.2f}%{tag} "
                       f"— signal ₹{signal_px:.2f} → live ₹{live_ltp:.2f} — skip")
-                continue
+                self._rej("proximity_drift" + ("_leader" if is_leader else "")); continue
             if is_leader and drift > PROXIMITY_MAX_PCT:
                 print(f"[Allocator] ⚡ LEADER {sym} drift {drift*100:.2f}% allowed "
                       f"(chg={live_chg:.1f}% RS={rs_d:+.1f}%)")
@@ -916,7 +921,7 @@ class TradingCrew:
                 htf = "neutral"
             if s.get("direction", "long") == "long" and htf == "down":
                 print(f"[Allocator] {sym} 15m HTF trend is DOWN — counter-trend, skip")
-                continue
+                self._rej("htf_down"); continue
 
             # Overwrite with the actual fill price; recompute TPs from it.
             # SL stays — it's a technical level, not a price-relative offset.
@@ -947,7 +952,7 @@ class TradingCrew:
                         # Re-check gate; if it now fails, skip
                         if s["final_score"] < MIN_SCORE_ENTRY:
                             print(f"[Allocator] {sym} post-decay score below gate — skip")
-                            continue
+                            self._rej("score_decay_below_gate"); continue
             except Exception:
                 pass
 
@@ -955,7 +960,7 @@ class TradingCrew:
             dist  = s["entry_price"] - s["stop_loss"]
             if dist <= 0:
                 print(f"[Allocator] {sym} live LTP ≤ SL — skip")
-                continue
+                self._rej("ltp_below_sl"); continue
 
             # Fix #31 (C2) — gradient dampener replaces binary CONSERVATIVE cliff.
             # Smoothly de-risks 0→1→2→3→4+ consec losses.
@@ -980,7 +985,7 @@ class TradingCrew:
 
             if qty < 1:
                 print(f"[Allocator] {sym} qty=0 — insufficient capital")
-                continue
+                self._rej("qty_zero"); continue
 
             # ── Sizing floor (Fix #9) — no qty=1 token trades ─────────────────
             # When capital is mostly deployed, the 3rd cap above can push qty
@@ -996,7 +1001,7 @@ class TradingCrew:
                                f"below floor (need risk≥₹{min_risk:.0f} pos≥₹{min_pos:.0f}) — watchlist")
                 print(f"[Allocator] {sym} {reason_skip}")
                 self._add_watchlist(sym, s, s.get("final_score", 0), s.get("reason", ""))
-                continue
+                self._rej("below_size_floor"); continue
 
             # Enter!
             tp1 = s.get("tp1_price") or _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R1)
@@ -1460,4 +1465,11 @@ class TradingCrew:
               f"{scored} entries | "
               f"{s['open_positions']} open | "
               f"P&L ₹{s['today_pnl']:+,.0f}{best_str}")
+
+        # Fix #39 — print per-stage rejection summary so we can SEE which gate
+        # is killing trades each tick. Sorted by frequency (most-rejecting first).
+        if self._reject_counts:
+            top = sorted(self._reject_counts.items(), key=lambda kv: -kv[1])
+            summary = ", ".join(f"{k}={v}" for k, v in top)
+            print(f"[Crew] Rejections this tick: {summary}")
         return s
