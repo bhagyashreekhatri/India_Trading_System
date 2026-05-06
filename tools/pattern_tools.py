@@ -368,16 +368,24 @@ def _detect_trend_pullback(
     if up_count < 5:
         return None
 
-    # 3. Pullback present — at least one non-green bar in last 4 (excl. current)
+    # 3. Pullback OR consolidation present in last 4 bars (excl. current).
+    # Fix #38 — also accept "small body" bars (body_ratio < 0.35) as pullback
+    # markers. Catches smooth grinders like COFORGE/IDEA that pause without
+    # ever printing a red bar.
     pulled_back = False
     pullback_low = float("inf")
     for i in range(-5, -1):
         try:
             bar_close = float(df.iloc[i]["close"])
             bar_open  = float(df.iloc[i]["open"])
+            bar_high  = float(df.iloc[i]["high"])
             bar_low   = float(df.iloc[i]["low"])
             pullback_low = min(pullback_low, bar_low)
-            if bar_close <= bar_open:
+            bar_range = bar_high - bar_low
+            body      = abs(bar_close - bar_open)
+            body_ratio= (body / bar_range) if bar_range > 0 else 0
+            # Red bar OR small-body consolidation
+            if bar_close <= bar_open or body_ratio < 0.35:
                 pulled_back = True
         except (IndexError, KeyError, ValueError):
             return None
@@ -589,7 +597,7 @@ def _detect_setups_multi(
         prev5_ranges = (df["high"].iloc[-6:-1] - df["low"].iloc[-6:-1])
         mean_prev_range = float(prev5_ranges.mean()) if not prev5_ranges.empty else 0.0
         cur_range = float(last["high"] - last["low"])
-        range_expanded = mean_prev_range > 0 and cur_range >= 1.2 * mean_prev_range  # Fix #37 — was 1.3
+        range_expanded = mean_prev_range > 0 and cur_range >= 1.0 * mean_prev_range  # Fix #38 — was 1.2; only rejects truly shrinking
     except Exception:
         range_expanded = True   # fail-open if math fails
     # Fix #30 (A3) — two-bar confirmation: prior bar must also be green.

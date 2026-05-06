@@ -45,6 +45,7 @@
 | 35 | **A9 — Dynamic lunch-window gate** — midday gate raised to 8.5 (from 8.0) if today_pnl < 0 by 13:00. Adapts risk to morning's tape | `agents/crew.py` | engine tests pass |
 | 36 | **A2 — Score decay on aging signals** — `_make_signal` stamps `detected_at` IST. In `_allocate`, if age > 5 min → final_score −0.5 and re-check gate. Defensive against signal queueing across ticks | `tools/pattern_tools.py`, `agents/crew.py` | engine tests pass |
 | 37 | **Filter-stack relaxation** — observed full session w/ ZERO entries; the cumulative filters were choking. Relaxed: MOMENTUM_BO_MIN_RVOL 2.0→1.7, hour 9 IST nudge +0.5→+0.3, hour 10 +0.3→+0.2, A4 range expansion 1.3×→1.2×, A9 midday gate 8.5→8.3 | `config/settings.py`, `tools/pattern_tools.py`, `agents/crew.py` | engine tests pass |
+| 38 | **Catch smooth grinders (COFORGE/IDEA class)** — agent missed COFORGE +8% / IDEA +5% smooth runs. Two fixes: (a) range_expanded threshold 1.2→1.0 (only rejects truly shrinking, not similar-size bars); (b) TREND_PULLBACK accepts small-body bar (body_ratio<0.35) as pullback marker, not only red bars | `tools/pattern_tools.py` | engine tests pass |
 
 **Constants added to `config/settings.py`:**
 `DAILY_LOSS_KILL_PCT=0.025`, `DAILY_PROFIT_LOCKOUT_PCT=0.030`, `DAILY_PROFIT_TIGHTEN_PCT=0.020`, `CONFLUENCE_MULTIPLIER_2=1.15`, `CONFLUENCE_MULTIPLIER_3=1.25`, `SCAN_MIN_TURNOVER=5_000_000`, `TICK_SIZE=0.05`, `MIN_RISK_PER_TRADE_PCT=0.0003`, `MIN_POSITION_VALUE_PCT=0.03`, `MAX_POSITION_VALUE_PCT=0.10` (was 0.20).
