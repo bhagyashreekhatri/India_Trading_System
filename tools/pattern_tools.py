@@ -589,7 +589,7 @@ def _detect_setups_multi(
         prev5_ranges = (df["high"].iloc[-6:-1] - df["low"].iloc[-6:-1])
         mean_prev_range = float(prev5_ranges.mean()) if not prev5_ranges.empty else 0.0
         cur_range = float(last["high"] - last["low"])
-        range_expanded = mean_prev_range > 0 and cur_range >= 1.3 * mean_prev_range
+        range_expanded = mean_prev_range > 0 and cur_range >= 1.2 * mean_prev_range  # Fix #37 — was 1.3
     except Exception:
         range_expanded = True   # fail-open if math fails
     # Fix #30 (A3) — two-bar confirmation: prior bar must also be green.

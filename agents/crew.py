@@ -509,7 +509,7 @@ class TradingCrew:
             try:
                 today_pnl_now = self.state.get_today_pnl()
                 if today_pnl_now < 0:
-                    midday_gate = max(midday_gate, 8.5)
+                    midday_gate = max(midday_gate, 8.3)   # Fix #37 — was 8.5
                     print(f"[Scorer] Lunch dynamic — morning P&L ₹{today_pnl_now:+,.0f} negative, "
                           f"midday gate raised to {midday_gate}")
             except Exception:

@@ -60,9 +60,10 @@ LEADER_RS_DELTA_PCT     = 1.5
 VOLUME_MIN_RATIO        = 1.2
 VOLUME_STRONG_RATIO     = 1.5
 VOLUME_VERY_STRONG      = 2.5
-MOMENTUM_BO_MIN_RVOL    = 2.0   # Fix #22 (A1) — hard floor for momentum_breakout
-                                # Real breakouts come on volume; without 2× RVOL,
-                                # 60% are fakeouts that get faded.
+MOMENTUM_BO_MIN_RVOL    = 1.7   # Fix #22 (A1) → Fix #37 — relaxed from 2.0.
+                                # 2.0 was choking entries on otherwise-clean
+                                # breakouts. 1.7 still rejects truly weak vol
+                                # while letting moderate-RVOL trades through.
 
 # ─── Score-based sizing tiers (Fix #23 / A6) ─────────────────────────────────
 # Higher conviction → larger position. Scales the per-trade risk cap (and thus
@@ -97,8 +98,8 @@ LOSER_STREAK_SIZE_TIERS = [
 #   Hour 10 IST: 58.8% WR, only losing hour
 # Nudges applied to MIN_SCORE_ENTRY at the top of _score_signals.
 HOUR_GATE_NUDGES = {
-    9:  +0.5,   # Loud noise — raise the bar
-    10: +0.3,   # Only-losing hour — raise the bar
+    9:  +0.3,   # Loud noise — raise the bar (was +0.5; relaxed Fix #37)
+    10: +0.2,   # Only-losing hour — raise the bar (was +0.3; relaxed Fix #37)
     11: -0.0,   # Solid — neutral
     12: -0.2,   # Best hour — lower the bar
     13:  0.0,

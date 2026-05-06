@@ -95,6 +95,11 @@ Ship one per session; verify on paper for 1–2 days before the next.
 > - Overnight position veto ✅ Fix #3
 > - sl_hit / sl_trail_hit distinction ✅ Fix #3
 >
+> **Note 2026-05-04:** Fix #37 dialed back the most-aggressive recent filters
+> (MOMENTUM_BO RVOL 2→1.7, hour-9 +0.5→+0.3, hour-10 +0.3→+0.2, range-expansion
+> 1.3→1.2, midday-dynamic 8.5→8.3) after observing a full half-session with
+> zero entries. The framework stays; the thresholds are gentler.
+>
 > Still open and high-priority:
 > - **INF-05 boot reconciliation with broker** (LIVE-READINESS GATE — biggest remaining risk)
 > - SHORT-01 add SHORT-side detectors (half the alpha unreachable)
