@@ -463,20 +463,36 @@ class TradeStateManager:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def is_in_cooldown(self, symbol: str, cooldown_minutes: int = 30) -> bool:
+    def is_in_cooldown(self, symbol: str, cooldown_minutes: int = 30,
+                       after_loss_minutes: int | None = None,
+                       after_win_minutes:  int | None = None) -> bool:
+        """
+        Fix #45 (P10) — asymmetric cooldown by last exit status:
+          - after a LOSS, longer cooldown (anti-revenge — emotion has cooled).
+          - after a WIN, shorter cooldown (stock is in motion, continuation OK).
+        Backwards-compatible: if `after_loss_minutes` / `after_win_minutes` are
+        None, falls back to symmetric `cooldown_minutes`.
+        """
         with self._conn() as conn:
             row = conn.execute("""
-                SELECT exit_time FROM positions
+                SELECT exit_time, status FROM positions
                 WHERE symbol=? AND status!='open'
                 ORDER BY exit_time DESC LIMIT 1
             """, (symbol,)).fetchone()
         if not row or not row["exit_time"]: return False
         try:
-            # IST-aware on both sides to remain correct after the entry/exit
-            # write path is migrated to IST-aware ISO.
             exit_dt = _to_ist(row["exit_time"])
             if exit_dt is None: return False
-            return (datetime.now(IST) - exit_dt).total_seconds() / 60 < cooldown_minutes
+            elapsed_min = (datetime.now(IST) - exit_dt).total_seconds() / 60
+            # Pick effective cooldown by last exit status
+            last_status = row["status"] or ""
+            if last_status == "closed_loss" and after_loss_minutes is not None:
+                eff = after_loss_minutes
+            elif last_status == "closed_win" and after_win_minutes is not None:
+                eff = after_win_minutes
+            else:
+                eff = cooldown_minutes
+            return elapsed_min < eff
         except Exception:
             return False
 

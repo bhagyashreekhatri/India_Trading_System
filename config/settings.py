@@ -169,6 +169,12 @@ ENTRY_MAX_SPREAD_PCT      = 0.10
 RAG_VETO_MIN_TRADES       = 10
 RAG_VETO_MAX_WINRATE      = 35.0
 
+# ─── Asymmetric cooldown (Fix #45 / P10) ─────────────────────────────────────
+# After a LOSS: longer cooldown — anti-revenge. After a WIN: shorter cooldown
+# — the stock is in motion, second-leg continuation often valid.
+COOLDOWN_AFTER_LOSS_MIN   = 45
+COOLDOWN_AFTER_WIN_MIN    = 15
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 

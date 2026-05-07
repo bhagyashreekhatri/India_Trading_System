@@ -62,6 +62,7 @@ from config.settings import (
     PAPER_TRADING, PAPER_SLIPPAGE_ENTRY_BPS, PAPER_SLIPPAGE_STOP_BPS,
     PAPER_SLIPPAGE_TARGET_BPS,
     ENTRY_MAX_SPREAD_PCT, RAG_VETO_MIN_TRADES, RAG_VETO_MAX_WINRATE,
+    COOLDOWN_AFTER_LOSS_MIN, COOLDOWN_AFTER_WIN_MIN,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -926,8 +927,12 @@ class TradingCrew:
             if strikes_today >= 2:
                 print(f"[Allocator] {sym} 2 strikes used today — skip")
                 self._rej("max_strikes"); continue
-            if self.state.is_in_cooldown(sym, 30):
-                print(f"[Allocator] {sym} in 30-min cooldown — skip")
+            if self.state.is_in_cooldown(
+                sym,
+                after_loss_minutes=COOLDOWN_AFTER_LOSS_MIN,
+                after_win_minutes=COOLDOWN_AFTER_WIN_MIN,
+            ):
+                print(f"[Allocator] {sym} in cooldown (45m loss / 15m win) — skip")
                 self._rej("cooldown"); continue
             second_strike = (strikes_today == 1)
 

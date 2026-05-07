@@ -170,8 +170,10 @@ def _detect_orb_breakout(
     Returns signal dict or None.
     """
     now_ist = datetime.now(IST).time()
-    # ORB breakout only valid 9:30 onwards
-    if now_ist < dtime(9, 30):
+    # Fix #46 (P3) — ORB only valid 09:30–10:30 IST. Late ORB breakouts (after
+    # 10:30) historically have ~40% WR vs 65–70% in the proper window.
+    # The edge decays with time elapsed since the range completed.
+    if now_ist < dtime(9, 30) or now_ist > dtime(10, 30):
         return None
 
     orb = _get_orb_levels(symbol)
