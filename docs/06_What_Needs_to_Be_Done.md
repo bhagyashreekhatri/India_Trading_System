@@ -21,7 +21,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 
 ### B. Exit quality (R-multiple boosters)
 
-- **B1. Three-tier targets** — TP1 = 0.7R (book 33 %), TP2 = 1.5R (book 33 %), TP3 = trail. Captures more partials, lets winners run. (~25 lines)
+- ✅ **B1 (surgical). TP1 1.0R → 0.7R** — Fix #48 deployed. Single-config change captures the bulk of B1's edge without three-tier complexity.
 - ✅ **B2. Volatility-adaptive trail** — Fix #25 deployed 2026-05-04. 0.4×ATR hot, 0.7×ATR chop, 0.5×ATR default.
 - ✅ **B3. Aggressive trail after +1.5R** — Fix #28 deployed 2026-05-04. mult overrides to 0.3×ATR.
 - **B4. Anchored-VWAP exit** — exit if price closes below the AVWAP from the breakout bar (long-side). High-precision invalidation. (~20 lines)

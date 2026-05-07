@@ -33,7 +33,12 @@ MAX_POSITION_VALUE_PCT  = 0.10            # 10% per trade (₹1.5L at ₹15L) �
 MIN_RISK_PER_TRADE_PCT  = 0.0003          # 0.03% = ₹450 — pure paranoia floor (qty=1 stops here)
                                           # The position-value floor below does the real work.
 MIN_POSITION_VALUE_PCT  = 0.03            # 3% of CAPITAL = ₹45k — skip+watchlist below this
-TARGET_R1               = 1.0            # TP1 — exit 50% here
+TARGET_R1               = 0.7            # TP1 — exit 50% here. Fix #48: was 1.0.
+                                         # File 04 showed 71% of trades stalled
+                                         # before reaching 1R. 0.7R lets us lock
+                                         # partial profit on +0.5% moves which
+                                         # happen far more often. Remaining 50%
+                                         # trails toward TP2 risk-free (SL→BE).
 TARGET_R2               = 2.0            # TP2 — exit remaining 50% here
 SCAN_INTERVAL_MIN       = 3              # scan every 3 minutes (was 5)
 
@@ -185,7 +190,10 @@ PRIME_TIME_START        = "09:30"        # best time for momentum/reclaim
 PRIME_TIME_END          = "11:30"        # peak volume window
 MIDDAY_AVOID_START      = "13:00"        # lunch lull — be selective
 MIDDAY_AVOID_END        = "14:00"        # resume normal scanning
-NO_NEW_ENTRY_AFTER      = "14:45"        # no new entries after this
+NO_NEW_ENTRY_AFTER      = "13:30"        # Fix #47 — was 14:45; late entries can't
+                                         # reach TP1 before EOD partial-unwind window
+                                         # AND the 15:00 force-close. Every entry now
+                                         # gets ≥75 min runway before exit pressure.
 MARKET_OPEN             = "09:15"
 MARKET_CLOSE            = "15:30"
 EOD_CLOSE_TIME          = "15:00"        # close all positions by 3 PM
