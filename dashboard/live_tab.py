@@ -15,8 +15,19 @@ from data.kite_client import KiteDataClient
 
 IST = ZoneInfo(TIMEZONE)
 
-@st.cache_resource
 def _get_kite():
+    """
+    Fix #51 — DO NOT cache the Kite client across renders. The dashboard runs
+    as a separate Streamlit process from the trading engine. When `kite_login.py`
+    refreshes the morning token, the engine restarts (picks up new token) but
+    the dashboard does not. A cached client holds yesterday's expired token →
+    every quote call fails silently → "Live LTP fetch failed for N of N".
+    Solution: reload .env per render so the latest KITE_ACCESS_TOKEN is read
+    each time, then build a fresh client. Cost is small (one init per 10-sec
+    autorefresh), reliability is fixed.
+    """
+    from dotenv import load_dotenv
+    load_dotenv(override=True)
     return KiteDataClient()
 
 def _fetch_live_prices(symbols: list[str]) -> dict:
