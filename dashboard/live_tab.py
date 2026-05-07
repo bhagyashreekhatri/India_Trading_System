@@ -20,14 +20,25 @@ def _get_kite():
     return KiteDataClient()
 
 def _fetch_live_prices(symbols: list[str]) -> dict:
-    """Batch fetch live LTP for open positions. Returns symbol → last_price."""
+    """
+    Batch fetch live LTP for open positions. Returns symbol → last_price (float)
+    or symbol → None if fetch failed for that name. Caller distinguishes
+    "missing" (None) from "valid LTP" so we don't silently fall back to
+    entry_price (which produced fake +0.00% P&L rows — Fix #50).
+    """
     if not symbols:
         return {}
+    out = {sym: None for sym in symbols}
     try:
         quotes = _get_kite().get_quotes(symbols)
-        return {sym: quotes[sym]["last_price"] for sym in symbols if sym in quotes}
-    except Exception:
-        return {}
+        for sym in symbols:
+            ltp = quotes.get(sym, {}).get("last_price")
+            if ltp and ltp > 0:
+                out[sym] = float(ltp)
+    except Exception as e:
+        # Leave all as None — caller will show "—" so the failure is visible
+        pass
+    return out
 
 
 def render_live_tab(state: TradeStateManager):
@@ -232,48 +243,77 @@ def _render_signals_table(signals: list):
 # ─── Open positions ───────────────────────────────────────────────────────────
 
 def _render_positions_table(positions: list):
-    """Open positions with live LTP, P&L, R — Kite-style."""
+    """Open positions with live LTP, separate Realised + Unrealised P&L (Fix #50)."""
     # Batch fetch live prices for all open positions
     symbols   = [p.symbol for p in positions]
     live_ltps = _fetch_live_prices(symbols)
 
     rows = []
-    total_pnl = 0.0
+    total_realised   = 0.0
+    total_unrealised = 0.0
+    fetch_failures   = 0
+
     for p in positions:
-        ltp     = live_ltps.get(p.symbol, p.entry_price)
+        ltp_raw = live_ltps.get(p.symbol)             # None if fetch failed
+        ltp     = ltp_raw if ltp_raw else p.entry_price  # for math fallback
+        ltp_ok  = ltp_raw is not None
         qty     = p.quantity_remaining or p.quantity or 0
-        unreal  = round((ltp - p.entry_price) * qty, 2)
-        chg_pct = round((ltp - p.entry_price) / p.entry_price * 100, 2) if p.entry_price else 0
+
+        # Realised: any P&L already booked from TP1 partial-exit
+        realised = round(p.pnl or 0.0, 2)
+
+        # Unrealised: open portion vs current LTP
+        if ltp_ok and qty > 0:
+            unreal = round((ltp - p.entry_price) * qty, 2)
+        else:
+            unreal = 0.0
+            if not ltp_ok:
+                fetch_failures += 1
+
+        total_realised   += realised
+        total_unrealised += unreal
+
+        chg_pct = round((ltp - p.entry_price) / p.entry_price * 100, 2) if (ltp_ok and p.entry_price) else 0
         sl_dist = abs(p.entry_price - (p.initial_sl or p.stop_loss)) or 1
-        pnl_r   = round(unreal / (sl_dist * qty), 2) if qty > 0 else 0
-        total_pnl += unreal
+        # R-running = total (realised + unrealised) / R-per-share / initial qty
+        total_now = realised + unreal
+        pnl_r     = round(total_now / (sl_dist * (p.quantity or qty)), 2) if (p.quantity or qty) > 0 else 0
 
         rows.append({
-            "Stock":      p.symbol,
-            "Setup":      (p.setup_type or "").replace("_", " ").title(),
-            "Grade":      p.grade or "-",
-            "Score":      f"{p.score:.1f}" if p.score else "-",
-            "Avg ₹":      f"{p.entry_price:,.2f}",
-            "LTP ₹":      f"{ltp:,.2f}",
-            "Chg %":      f"{chg_pct:+.2f}%",
-            "SL ₹":       f"{p.stop_loss:,.2f}",
-            "TP1 ₹":      f"{p.tp1_price:,.2f}",
-            "TP2 ₹":      f"{p.tp2_price:,.2f}",
-            "TP1":        "✅" if p.tp1_hit else "⏳",
-            "Qty":        qty,
-            "P&L ₹":     f"₹{unreal:+,.0f}",
-            "R running":  f"{pnl_r:+.1f}R",
-            "Reason":     (p.entry_reason or "")[:60],
+            "Stock":         p.symbol,
+            "Setup":         (p.setup_type or "").replace("_", " ").title(),
+            "Grade":         p.grade or "-",
+            "Score":         f"{p.score:.1f}" if p.score else "-",
+            "Avg ₹":         f"{p.entry_price:,.2f}",
+            "LTP ₹":         f"{ltp:,.2f}" if ltp_ok else "—",
+            "Chg %":         f"{chg_pct:+.2f}%" if ltp_ok else "—",
+            "SL ₹":          f"{p.stop_loss:,.2f}",
+            "TP1 ₹":         f"{p.tp1_price:,.2f}",
+            "TP2 ₹":         f"{p.tp2_price:,.2f}",
+            "TP1":           "✅" if p.tp1_hit else "⏳",
+            "Qty":           qty,
+            "Realised ₹":    f"₹{realised:+,.0f}" if realised else "—",
+            "Unrealised ₹":  f"₹{unreal:+,.0f}" if ltp_ok else "—",
+            "R running":     f"{pnl_r:+.1f}R" if ltp_ok else "—",
+            "Reason":        (p.entry_reason or "")[:60],
         })
 
-    # Total P&L summary row
+    # Total summary row
     if rows:
-        pnl_color = "green" if total_pnl >= 0 else "red"
+        total_all = total_realised + total_unrealised
+        col_total = "green" if total_all >= 0 else "red"
+        col_real  = "green" if total_realised  >= 0 else "red"
+        col_unr   = "green" if total_unrealised >= 0 else "red"
         st.markdown(
-            f"**Total Unrealized P&L: "
-            f"<span style='color:{pnl_color};font-size:1.2em'>₹{total_pnl:+,.0f}</span>**",
+            f"**Realised: <span style='color:{col_real}'>₹{total_realised:+,.0f}</span>** &nbsp;|&nbsp; "
+            f"**Unrealised: <span style='color:{col_unr}'>₹{total_unrealised:+,.0f}</span>** &nbsp;|&nbsp; "
+            f"**Total: <span style='color:{col_total};font-size:1.2em'>₹{total_all:+,.0f}</span>**",
             unsafe_allow_html=True,
         )
+        if fetch_failures > 0:
+            st.warning(f"⚠️ Live LTP fetch failed for {fetch_failures} of {len(positions)} positions — "
+                       f"unrealised P&L shown as '—'. Likely a Kite token / network blip; the engine "
+                       f"itself uses a separate Kite client and is unaffected.")
 
     df = pd.DataFrame(rows)
     st.dataframe(
