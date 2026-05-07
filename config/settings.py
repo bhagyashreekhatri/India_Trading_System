@@ -156,6 +156,19 @@ PAPER_SLIPPAGE_ENTRY_BPS  = 5    # 0.05% — entry filled slightly worse than LT
 PAPER_SLIPPAGE_STOP_BPS   = 10   # 0.10% — stops fill worse (gap risk + market order)
 PAPER_SLIPPAGE_TARGET_BPS = 3    # 0.03% — targets fill near LTP (limit order)
 
+# ─── Spread filter (Fix #43 / P1) ────────────────────────────────────────────
+# Hard reject if bid-ask spread exceeds this %. Wide spreads silently destroy
+# scalp R:R — a 0.10% spread on a 0.7% stop eats 28% of TP1's gross. Names
+# with spread > 0.10% should not be scalped at all.
+ENTRY_MAX_SPREAD_PCT      = 0.10
+
+# ─── RAG proven-loser veto (Fix #44 / P2) ────────────────────────────────────
+# Hard skip if (setup_type, regime) has ≥N historical trades AND win-rate is
+# below the floor. Stronger than the -0.5 score nudge in Fix #41 — proven
+# losers shouldn't even be candidates.
+RAG_VETO_MIN_TRADES       = 10
+RAG_VETO_MAX_WINRATE      = 35.0
+
 # ─── Correlation filter ───────────────────────────────────────────────────────
 MAX_SAME_SECTOR_POSITIONS = 3            # max positions in same sector
 

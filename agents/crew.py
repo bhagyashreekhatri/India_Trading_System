@@ -61,6 +61,7 @@ from config.settings import (
     DAILY_PROFIT_LOCKOUT_PCT, DAILY_PROFIT_TIGHTEN_PCT,
     PAPER_TRADING, PAPER_SLIPPAGE_ENTRY_BPS, PAPER_SLIPPAGE_STOP_BPS,
     PAPER_SLIPPAGE_TARGET_BPS,
+    ENTRY_MAX_SPREAD_PCT, RAG_VETO_MIN_TRADES, RAG_VETO_MAX_WINRATE,
 )
 
 IST = ZoneInfo(TIMEZONE)
@@ -709,6 +710,7 @@ class TradingCrew:
                 hist_nudge = 0.0
                 hist_found = 0
                 hist_wr    = None
+                rag_veto   = False
                 try:
                     hist = self.chroma.query_similar_signals(
                         setup_type=s.get("setup_type", ""),
@@ -725,8 +727,20 @@ class TradingCrew:
                         if hist_nudge != 0.0:
                             print(f"[Scorer] {sym} RAG: {hist_found} similar trades, "
                                   f"WR={hist_wr:.0f}% → nudge {hist_nudge:+.1f}")
+                    # ── P2 / Fix #44 — RAG proven-loser veto ──────────────
+                    # If we have enough history (≥10) AND WR is below floor
+                    # (35%), the (setup × regime) combo is a proven loser.
+                    # Don't take it at all — stronger than the -0.5 nudge.
+                    if hist_found >= RAG_VETO_MIN_TRADES and hist_wr is not None \
+                            and hist_wr < RAG_VETO_MAX_WINRATE:
+                        rag_veto = True
+                        print(f"[Scorer] {sym} ⛔ RAG VETO — {hist_found} trades, "
+                              f"WR={hist_wr:.0f}% < {RAG_VETO_MAX_WINRATE}% — skip")
                 except Exception:
                     pass
+
+                if rag_veto:
+                    self._rej("rag_proven_loser"); continue
 
                 # Combine PDH + sector + breadth + history nudges in a single
                 # score update so we don't recompute grade four times.
@@ -933,6 +947,23 @@ class TradingCrew:
             if live_ltp <= 0:
                 print(f"[Allocator] {sym} no live LTP — skip")
                 self._rej("live_ltp_zero"); continue
+
+            # ── Spread filter (Fix #43 / P1) ─────────────────────────────────
+            # Reject names with bid-ask spread > ENTRY_MAX_SPREAD_PCT. Wide
+            # spreads silently destroy scalp R:R — a 0.10% spread on a 0.7%
+            # stop eats 28% of TP1's gross. spread=999 means depth unavailable
+            # → defer (treat as too-wide rather than fail-open).
+            try:
+                spread_pct = self.kite.get_spread_pct(sym)
+            except Exception:
+                spread_pct = 999.0
+            if spread_pct >= 999.0:
+                print(f"[Allocator] {sym} spread depth unavailable — defer")
+                self._rej("spread_no_depth"); continue
+            if spread_pct > ENTRY_MAX_SPREAD_PCT:
+                print(f"[Allocator] {sym} spread {spread_pct:.3f}% > "
+                      f"{ENTRY_MAX_SPREAD_PCT:.3f}% — bleed risk, skip")
+                self._rej("spread_too_wide"); continue
 
             signal_px = float(s["entry_price"])
             drift = abs(live_ltp - signal_px) / signal_px if signal_px > 0 else 1.0
