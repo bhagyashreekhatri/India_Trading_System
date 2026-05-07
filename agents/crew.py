@@ -178,6 +178,9 @@ class TradingCrew:
         # Fix #39 — per-tick rejection counters (which gate killed each candidate).
         # Cleared at the start of every tick; printed at end.
         self._reject_counts: dict[str, int] = {}
+        # Fix #40 — bearish-breadth flag drives a -0.7 score penalty in scoring
+        # (replaces the old tick-killing early return).
+        self._breadth_bearish: bool = False
         # Clear yesterday's watchlist so dashboard shows only today's signals
         self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
@@ -214,10 +217,15 @@ class TradingCrew:
         breadth_score = self._breadth_cache.get("breadth_score", 0.6)
         breadth_label = self._breadth_cache.get("breadth_label", "NEUTRAL")
 
-        # Breadth gate — avoid new longs in bad breadth
-        if breadth_score <= BREADTH_BEARISH:
-            print(f"[Crew] Breadth BEARISH ({breadth_score:.0%}) — no new entries")
-            return self._tick_summary(0, 0, 0)
+        # Fix #40 — breadth-bearish should NOT kill the tick (was an early
+        # return → 0 setups even on days like Nifty -0.07% with strong
+        # individual movers). Now: continue scanning + scoring; bearish breadth
+        # adds a -0.7 score penalty in _score_signals so only A+/A++ trades
+        # fire. Real scalpers don't shut down on a slightly-red day; they get
+        # picky about which stocks they trade.
+        self._breadth_bearish = breadth_score <= BREADTH_BEARISH
+        if self._breadth_bearish:
+            print(f"[Crew] Breadth BEARISH ({breadth_score:.0%}) — score penalty -0.7 will apply, only A+/A++ fire")
 
         # 4. Scan active stocks
         active = self._scan_market()
@@ -684,9 +692,15 @@ class TradingCrew:
                     sector_nudge = 0.3
                 elif sym_sector in weak_secs:
                     sector_nudge = -0.5
-                # Combine PDH + sector nudges in a single score update so we
-                # don't recompute grade twice.
-                total_nudge = sector_nudge + pdh_nudge
+                # Fix #40 — breadth-bearish penalty (-0.7). Replaces the old
+                # tick-killing early return with a quality filter: only setups
+                # strong enough to clear the gate AFTER -0.7 (i.e., effectively
+                # A+/A++) actually fire on bearish-breadth days.
+                breadth_pen = -0.7 if getattr(self, "_breadth_bearish", False) else 0.0
+
+                # Combine PDH + sector + breadth nudges in a single score update
+                # so we don't recompute grade twice.
+                total_nudge = sector_nudge + pdh_nudge + breadth_pen
                 if total_nudge != 0.0:
                     new_score = max(0.0, min(10.0, comp.final_score + total_nudge))
                     comp.final_score = new_score
@@ -732,6 +746,7 @@ class TradingCrew:
                             "confluence_mult":  conf_mult,
                             "sector_nudge":     sector_nudge,
                             "pdh_nudge":        pdh_nudge,
+                            "breadth_pen":      breadth_pen,
                         },
                         "rs_delta":    rs_delta,
                         "news_headline": headline,
