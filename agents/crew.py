@@ -698,9 +698,39 @@ class TradingCrew:
                 # A+/A++) actually fire on bearish-breadth days.
                 breadth_pen = -0.7 if getattr(self, "_breadth_bearish", False) else 0.0
 
-                # Combine PDH + sector + breadth nudges in a single score update
-                # so we don't recompute grade twice.
-                total_nudge = sector_nudge + pdh_nudge + breadth_pen
+                # ── D1 / Fix #41 — RAG read: historical WR nudge ─────────────
+                # Activates the learning loop. Query ChromaDB signal_patterns
+                # for past trades with the same (setup_type, regime). With ≥5
+                # historical trades:
+                #   WR ≥ 65 %  → +0.3 nudge (proven setup × regime fit)
+                #   WR <  40 %  → −0.5 nudge (proven loser configuration)
+                #   else        →  0      (not enough edge in the data)
+                # Insufficient history (<5 trades) → 0 (don't act on noise).
+                hist_nudge = 0.0
+                hist_found = 0
+                hist_wr    = None
+                try:
+                    hist = self.chroma.query_similar_signals(
+                        setup_type=s.get("setup_type", ""),
+                        regime=regime,
+                        n_results=20,
+                    )
+                    hist_found = int(hist.get("found", 0) or 0)
+                    if hist_found >= 5:
+                        hist_wr = float(hist.get("win_rate") or 50.0)
+                        if hist_wr >= 65:
+                            hist_nudge = 0.3
+                        elif hist_wr < 40:
+                            hist_nudge = -0.5
+                        if hist_nudge != 0.0:
+                            print(f"[Scorer] {sym} RAG: {hist_found} similar trades, "
+                                  f"WR={hist_wr:.0f}% → nudge {hist_nudge:+.1f}")
+                except Exception:
+                    pass
+
+                # Combine PDH + sector + breadth + history nudges in a single
+                # score update so we don't recompute grade four times.
+                total_nudge = sector_nudge + pdh_nudge + breadth_pen + hist_nudge
                 if total_nudge != 0.0:
                     new_score = max(0.0, min(10.0, comp.final_score + total_nudge))
                     comp.final_score = new_score
@@ -747,6 +777,9 @@ class TradingCrew:
                             "sector_nudge":     sector_nudge,
                             "pdh_nudge":        pdh_nudge,
                             "breadth_pen":      breadth_pen,
+                            "hist_nudge":       hist_nudge,
+                            "hist_found":       hist_found,
+                            "hist_wr":          hist_wr,
                         },
                         "rs_delta":    rs_delta,
                         "news_headline": headline,
