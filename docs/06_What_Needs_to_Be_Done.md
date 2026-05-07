@@ -44,7 +44,7 @@ Concrete improvements that make entries and exits smarter. Pickable one-by-one.
 - ✅ **D1. Per-(setup, regime) RAG read** — Fix #41 deployed. WR≥65 → +0.3, WR<40 → -0.5, ≥5 hits required. Learning loop is now CLOSED.
 - ✅ **D2. Symbol auto-blacklist** — Fix #27 deployed 2026-05-04. ≥3 trades & <30% WR rolling-30 → skip.
 - **D3. Per-hour learned multipliers** — EOD job writes `learned_hour_multipliers.json`; scoring reads next morning. Fully data-driven time-of-day weights. (~30 lines)
-- **D4. Self-critique on every closed trade** — T3 model EOD-batched returns `process_grade`/`would_take_again` JSON written to ChromaDB. Highest-information learning. (~50 lines)
+- ✅ **D4. Self-critique on every closed trade** — Fix #42 deployed. EOD batched Groq call grades each trade's process; `trade_critiques` Chroma collection.
 - **D5. Weekly proposed-multiplier diff** — auto-suggest regime × setup multiplier changes; human approves; A/B paper-validate before rollout. (~80 lines)
 
 ### E. New setups (more shots on goal)

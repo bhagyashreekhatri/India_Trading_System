@@ -11,10 +11,11 @@ What it does:
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import json
 from memory.trade_state import TradeStateManager
 from memory.chroma_client import ChromaMemory
 from tools.telegram_tools import alert_eod_report
-from config.settings import TIMEZONE
+from config.settings import TIMEZONE, GROQ_API_KEY, GROQ_MODEL
 
 IST = ZoneInfo(TIMEZONE)
 
@@ -102,6 +103,12 @@ def run_eod_job():
     print(f"\n  Stored {stored}/{len(closed)} outcomes in ChromaDB")
     print(f"{'─'*60}")
 
+    # Fix #42 (D4) — LLM self-critique pass on today's closed trades
+    try:
+        _run_self_critique(closed, chroma)
+    except Exception as e:
+        print(f"[EOD] self-critique outer error (non-fatal): {e}")
+
     # ── 4. Setup breakdown ───────────────────────────────────────────────────
     by_setup = state.get_win_rate_by_setup()
     if by_setup:
@@ -154,6 +161,92 @@ def run_eod_job():
     print(f"\n{'='*60}")
     print(f"  EOD job complete — system learned from today's {len(stored)} trades.")
     print(f"{'='*60}\n")
+
+
+def _run_self_critique(closed_trades, chroma):
+    """
+    Fix #42 (D4) — LLM-graded process review of today's closed trades.
+    Single batched Groq call; failure is non-fatal (rest of EOD runs).
+
+    Process grade evaluates DECISION QUALITY independent of outcome.
+    The 2×2 (process × outcome) tag is the highest-information learning artefact:
+      good_trade_good_outcome  → reinforce
+      good_trade_bad_outcome   → KEEP — bad luck, not bad process
+      bad_trade_good_outcome   → DO NOT reinforce — lucky win, bad pattern
+      bad_trade_bad_outcome    → flag for blacklist
+    """
+    if not closed_trades:
+        return
+    if not GROQ_API_KEY:
+        print("[EOD] Self-critique skipped — no GROQ_API_KEY")
+        return
+
+    # Cap the batch to control tokens (~100 tokens per row × cap = bounded)
+    batch = closed_trades[:30]
+    rows = []
+    for t in batch:
+        rows.append({
+            "id":     t.id,
+            "sym":    t.symbol,
+            "setup":  t.setup_type,
+            "grade":  t.grade or "?",
+            "score":  round(t.score or 0, 2),
+            "regime": t.regime or "unknown",
+            "pnl_r":  round(t.pnl_r or 0, 2),
+            "exit":   t.exit_reason or "",
+            "outcome": "WIN" if t.status == "closed_win" else "LOSS",
+        })
+
+    prompt = (
+        "You are an intraday trading process auditor. For each trade, evaluate "
+        "DECISION QUALITY independent of outcome. Process grade considers: "
+        "setup quality, regime fit, exit cleanliness — NOT just P&L.\n\n"
+        "Return ONLY this JSON shape:\n"
+        '{"trades":[{"id":N,"process_grade":"A|B|C|D|F",'
+        '"tag":"good_trade_good_outcome|good_trade_bad_outcome|'
+        'bad_trade_good_outcome|bad_trade_bad_outcome",'
+        '"would_take_again":true|false,"improvement":"<=12 words"}]}\n\n'
+        f"Trades:\n{json.dumps(rows)}"
+    )
+
+    try:
+        from groq import Groq
+        client = Groq(api_key=GROQ_API_KEY)
+        resp = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=2000,
+            response_format={"type": "json_object"},
+            timeout=30,
+        )
+        content = resp.choices[0].message.content.strip()
+        data = json.loads(content)
+    except Exception as e:
+        print(f"[EOD] Self-critique Groq call failed (non-fatal): {e}")
+        return
+
+    critiques = data.get("trades", []) if isinstance(data, dict) else []
+    print(f"\n[EOD] 🧠 Got {len(critiques)} self-critiques from LLM")
+
+    tag_counts = {}
+    for c in critiques:
+        try:
+            chroma.store_trade_critique(
+                trade_id        = c.get("id"),
+                process_grade   = c.get("process_grade", "C"),
+                tag             = c.get("tag", "unknown"),
+                would_take_again= bool(c.get("would_take_again", True)),
+                improvement     = c.get("improvement", ""),
+            )
+            tag_counts[c.get("tag", "unknown")] = tag_counts.get(c.get("tag", "unknown"), 0) + 1
+        except Exception as e:
+            print(f"[EOD] critique save error for trade {c.get('id')}: {e}")
+
+    if tag_counts:
+        print("[EOD] Critique tag distribution:")
+        for tag, n in sorted(tag_counts.items(), key=lambda kv: -kv[1]):
+            print(f"  {tag:30s} {n}")
 
 
 def _send_empty_eod(today: str):

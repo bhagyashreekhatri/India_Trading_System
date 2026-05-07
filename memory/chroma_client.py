@@ -21,6 +21,8 @@ class ChromaMemory:
         self.news      = self.client.get_or_create_collection("news_signals")
         self.patterns  = self.client.get_or_create_collection("signal_patterns")
         self.regimes   = self.client.get_or_create_collection("regime_context")
+        # Fix #42 (D4) — self-critique outcomes per closed trade
+        self.critiques = self.client.get_or_create_collection("trade_critiques")
 
     # ── News signals ──────────────────────────────────────────────────────────
 
@@ -192,6 +194,53 @@ class ChromaMemory:
                 "time":            datetime.now().strftime("%H:%M"),
             }]
         )
+
+    # ── Self-critiques (Fix #42 / D4) ─────────────────────────────────────────
+
+    def store_trade_critique(self, trade_id, process_grade, tag,
+                             would_take_again, improvement):
+        """
+        Persist the LLM's process-critique for a closed trade.
+        Process grade is independent of outcome — we want to learn from
+        good_trade_bad_outcome (keep doing) and bad_trade_good_outcome
+        (DON'T learn from these — lucky wins).
+        """
+        doc_id = f"critique_{trade_id}_{datetime.now().strftime('%Y%m%d')}"
+        description = (
+            f"Trade {trade_id}: grade={process_grade} tag={tag} "
+            f"retake={would_take_again}. {improvement}"
+        )
+        try:
+            self.critiques.add(
+                ids=[doc_id],
+                documents=[description],
+                metadatas=[{
+                    "trade_id":          int(trade_id) if trade_id is not None else 0,
+                    "process_grade":     str(process_grade),
+                    "tag":               str(tag),
+                    "would_take_again":  bool(would_take_again),
+                    "improvement":       str(improvement)[:200],
+                    "date":              datetime.now().date().isoformat(),
+                }]
+            )
+        except Exception as e:
+            print(f"[Chroma] critique store failed for {trade_id}: {e}")
+
+    def get_critique_tag_counts(self, days: int = 30) -> dict:
+        """Roll-up: count of each tag in the last N days. Used for weekly review."""
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=days)).date().isoformat()
+        try:
+            results = self.critiques.get(
+                where={"date": {"$gte": cutoff}}
+            )
+            tags = {}
+            for m in results.get("metadatas", []) or []:
+                t = m.get("tag", "unknown")
+                tags[t] = tags.get(t, 0) + 1
+            return tags
+        except Exception:
+            return {}
 
     def get_regime_history(self, regime: str, n: int = 10) -> list[dict]:
         try:
