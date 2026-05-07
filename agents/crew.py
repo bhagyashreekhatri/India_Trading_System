@@ -1550,10 +1550,16 @@ class TradingCrew:
               f"{s['open_positions']} open | "
               f"P&L ₹{s['today_pnl']:+,.0f}{best_str}")
 
-        # Fix #39 — print per-stage rejection summary so we can SEE which gate
-        # is killing trades each tick. Sorted by frequency (most-rejecting first).
+        # Fix #39 + #49 — print per-stage rejection summary EVERY tick (even
+        # if empty), so the diagnostic is always visible in journalctl.
         if self._reject_counts:
             top = sorted(self._reject_counts.items(), key=lambda kv: -kv[1])
             summary = ", ".join(f"{k}={v}" for k, v in top)
             print(f"[Crew] Rejections this tick: {summary}")
+        else:
+            # Make absence visible — tells operator "scoring/allocate path
+            # never had a candidate to reject" (vs filter-killed-everything).
+            print(f"[Crew] Rejections this tick: NONE "
+                  f"(setups={setups}, scored={scored} — "
+                  f"{'no setups detected' if setups == 0 else 'all candidates passed' if scored > 0 else 'all setups dropped before scoring'})")
         return s
