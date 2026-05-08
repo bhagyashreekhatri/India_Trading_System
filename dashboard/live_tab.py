@@ -17,20 +17,29 @@ IST = ZoneInfo(TIMEZONE)
 
 def _get_kite():
     """
-    Fix #51 + Fix #53 — DO NOT cache the Kite client across renders, AND read
-    the access token directly from os.environ (not config.settings). The
-    dashboard runs as a separate Streamlit process from the engine. When
-    `kite_login.py` refreshes the morning token, the engine restarts but the
-    dashboard does not. `load_dotenv(override=True)` updates os.environ, BUT
+    Fix #51 + #53 + #55 — DO NOT cache the Kite client across renders, AND
+    inject the fresh access token directly onto the underlying KiteConnect
+    AFTER init. Bypasses any dependency on KiteDataClient's __init__
+    signature so this works whether the server has the new signature or
+    not (defensive against partial deploys / stale .pyc).
+
+    Why: dashboard runs as a separate Streamlit process from the engine.
+    `load_dotenv(override=True)` updates os.environ, but
     `config.settings.KITE_ACCESS_TOKEN` is a module-level constant frozen
-    when the dashboard first imported it. Passing the os.environ value
-    explicitly bypasses the stale constant.
+    at import time, so KiteDataClient() with no args holds the stale token.
+    Setting kite.set_access_token() post-init forces the fresh token in.
     """
     import os
     from dotenv import load_dotenv
     load_dotenv(override=True)
     fresh_token = os.environ.get("KITE_ACCESS_TOKEN", "")
-    return KiteDataClient(access_token=fresh_token)
+    client = KiteDataClient()
+    if fresh_token:
+        try:
+            client.kite.set_access_token(fresh_token)
+        except Exception:
+            pass
+    return client
 
 def _fetch_live_prices(symbols: list[str]) -> tuple[dict, str]:
     """
