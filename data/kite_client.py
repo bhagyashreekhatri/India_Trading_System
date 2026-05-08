@@ -22,9 +22,16 @@ class KiteDataClient:
     EXCHANGE = "NSE"
     INDEX_EXCHANGE = "NSE"
 
-    def __init__(self):
+    def __init__(self, access_token: Optional[str] = None):
+        # Fix #53 — accept access_token override. Required by the dashboard,
+        # which reloads .env each render but cannot mutate the already-imported
+        # config.settings.KITE_ACCESS_TOKEN constant. Without this, the
+        # dashboard always uses the stale token captured at process start →
+        # "Live LTP fetch failed for N of N" until the dashboard process is
+        # restarted manually. Engine path passes nothing → uses settings as
+        # before.
         self.kite = KiteConnect(api_key=KITE_API_KEY)
-        self.kite.set_access_token(KITE_ACCESS_TOKEN)
+        self.kite.set_access_token(access_token or KITE_ACCESS_TOKEN)
         self._instrument_cache: dict = {}
         self._pdh_pdl_cache: dict = {}   # (symbol, date_str) → (pdh, pdl)
         self._load_instruments()

@@ -17,29 +17,32 @@ IST = ZoneInfo(TIMEZONE)
 
 def _get_kite():
     """
-    Fix #51 — DO NOT cache the Kite client across renders. The dashboard runs
-    as a separate Streamlit process from the trading engine. When `kite_login.py`
-    refreshes the morning token, the engine restarts (picks up new token) but
-    the dashboard does not. A cached client holds yesterday's expired token →
-    every quote call fails silently → "Live LTP fetch failed for N of N".
-    Solution: reload .env per render so the latest KITE_ACCESS_TOKEN is read
-    each time, then build a fresh client. Cost is small (one init per 10-sec
-    autorefresh), reliability is fixed.
+    Fix #51 + Fix #53 — DO NOT cache the Kite client across renders, AND read
+    the access token directly from os.environ (not config.settings). The
+    dashboard runs as a separate Streamlit process from the engine. When
+    `kite_login.py` refreshes the morning token, the engine restarts but the
+    dashboard does not. `load_dotenv(override=True)` updates os.environ, BUT
+    `config.settings.KITE_ACCESS_TOKEN` is a module-level constant frozen
+    when the dashboard first imported it. Passing the os.environ value
+    explicitly bypasses the stale constant.
     """
+    import os
     from dotenv import load_dotenv
     load_dotenv(override=True)
-    return KiteDataClient()
+    fresh_token = os.environ.get("KITE_ACCESS_TOKEN", "")
+    return KiteDataClient(access_token=fresh_token)
 
-def _fetch_live_prices(symbols: list[str]) -> dict:
+def _fetch_live_prices(symbols: list[str]) -> tuple[dict, str]:
     """
-    Batch fetch live LTP for open positions. Returns symbol → last_price (float)
-    or symbol → None if fetch failed for that name. Caller distinguishes
-    "missing" (None) from "valid LTP" so we don't silently fall back to
-    entry_price (which produced fake +0.00% P&L rows — Fix #50).
+    Batch fetch live LTP for open positions.
+    Returns (prices_map, error_msg) — empty error_msg if all OK.
+    Surfacing the error string lets the dashboard show the actual cause
+    (token expired vs network blip vs rate-limit) instead of a vague warning.
     """
     if not symbols:
-        return {}
+        return {}, ""
     out = {sym: None for sym in symbols}
+    err_msg = ""
     try:
         quotes = _get_kite().get_quotes(symbols)
         for sym in symbols:
@@ -47,9 +50,9 @@ def _fetch_live_prices(symbols: list[str]) -> dict:
             if ltp and ltp > 0:
                 out[sym] = float(ltp)
     except Exception as e:
-        # Leave all as None — caller will show "—" so the failure is visible
-        pass
-    return out
+        # Surface the error so the dashboard banner explains WHY
+        err_msg = f"{type(e).__name__}: {e}"
+    return out, err_msg
 
 
 def render_live_tab(state: TradeStateManager):
@@ -144,7 +147,9 @@ def render_live_tab(state: TradeStateManager):
     watchlist = state.get_watchlist()
     if watchlist:
         st.divider()
-        st.markdown("#### 👀 Watchlist (B-grade signals waiting)")
+        st.markdown("#### 👀 Watchlist — proximity-failed (high score, ran past entry) + B-grade waiting")
+        st.caption("`Entry ₹` is the original signal trigger. `LTP ₹` is now. `Drift %` >0.7% → "
+                   "proximity gate fired → not entered.")
         _render_watchlist(watchlist)
 
     st.caption(
@@ -257,7 +262,7 @@ def _render_positions_table(positions: list):
     """Open positions with live LTP, separate Realised + Unrealised P&L (Fix #50)."""
     # Batch fetch live prices for all open positions
     symbols   = [p.symbol for p in positions]
-    live_ltps = _fetch_live_prices(symbols)
+    live_ltps, ltp_err = _fetch_live_prices(symbols)
 
     rows = []
     total_realised   = 0.0
@@ -322,9 +327,10 @@ def _render_positions_table(positions: list):
             unsafe_allow_html=True,
         )
         if fetch_failures > 0:
+            cause = f" Cause: `{ltp_err}`" if ltp_err else ""
             st.warning(f"⚠️ Live LTP fetch failed for {fetch_failures} of {len(positions)} positions — "
-                       f"unrealised P&L shown as '—'. Likely a Kite token / network blip; the engine "
-                       f"itself uses a separate Kite client and is unaffected.")
+                       f"unrealised P&L shown as '—'. Engine uses a separate Kite client and is unaffected."
+                       f"{cause}")
 
     df = pd.DataFrame(rows)
     st.dataframe(
@@ -383,18 +389,44 @@ def _render_closed_table(trades: list):
 # ─── Watchlist ────────────────────────────────────────────────────────────────
 
 def _render_watchlist(watchlist: list):
+    """Fix #54 — derive grade from score (DB doesn't store grade); show live
+    LTP + Drift % so the user instantly sees why proximity-failed names like
+    NBCC are stuck on the bench."""
+    # Batch-fetch LTPs for all watchlist symbols
+    syms = [w.symbol for w in watchlist]
+    ltps_map, _err = _fetch_live_prices(syms) if syms else ({}, "")
+
+    def _grade_from_score(s: float) -> str:
+        if s >= 9.0: return "A++"
+        if s >= 8.0: return "A+"
+        if s >= 7.0: return "A"
+        if s >= 5.0: return "B"
+        return "C"
+
     rows = []
     for w in watchlist:
+        ltp = ltps_map.get(w.symbol)
+        if ltp and w.entry_price:
+            drift_pct = (ltp - w.entry_price) / w.entry_price * 100
+            ltp_str   = f"{ltp:,.2f}"
+            drift_str = f"{drift_pct:+.2f}%"
+        else:
+            ltp_str   = "—"
+            drift_str = "—"
+
         rows.append({
-            "Stock":  w.symbol,
-            "Setup":  (w.setup_type or "").replace("_", " ").title(),
-            "Score":  f"{w.score:.1f}",
+            "Stock":   w.symbol,
+            "Setup":   (w.setup_type or "").replace("_", " ").title(),
+            "Grade":   _grade_from_score(w.score),
+            "Score":   f"{w.score:.1f}",
             "Entry ₹": f"{w.entry_price:,.2f}",
-            "SL ₹":   f"{w.stop_loss:,.2f}",
-            "TP1 ₹":  f"{w.tp1_price:,.2f}",
-            "TP2 ₹":  f"{w.tp2_price:,.2f}",
-            "Added":  (w.added_at or "")[:16],
-            "Reason": (w.reason or "")[:70],
+            "LTP ₹":   ltp_str,
+            "Drift %": drift_str,
+            "SL ₹":    f"{w.stop_loss:,.2f}",
+            "TP1 ₹":   f"{w.tp1_price:,.2f}",
+            "TP2 ₹":   f"{w.tp2_price:,.2f}",
+            "Added":   (w.added_at or "")[11:16],
+            "Reason":  (w.reason or "")[:70],
         })
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)

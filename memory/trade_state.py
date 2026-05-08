@@ -254,7 +254,18 @@ class TradeStateManager:
         self._update_session_stats(pnl, status)
 
     def add_to_watchlist(self, item: WatchlistItem):
+        """
+        Fix #54 — UPSERT by (symbol, today). NBCC-class proximity-fails were
+        creating one watchlist row per tick (5+ NBCC rows by midday). Now we
+        delete today's existing row for the same symbol before inserting the
+        fresh one. Keeps a clean, latest-state-per-symbol view.
+        """
+        today = date.today().isoformat()
         with self._conn() as conn:
+            conn.execute(
+                "DELETE FROM watchlist WHERE symbol = ? AND added_at LIKE ?",
+                (item.symbol, f"{today}%"),
+            )
             conn.execute("""
                 INSERT INTO watchlist
                 (symbol,setup_type,score,entry_price,stop_loss,tp1_price,tp2_price,reason,added_at)

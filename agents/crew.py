@@ -765,13 +765,20 @@ class TradingCrew:
 
                 will_enter = result.is_valid and comp.final_score >= effective_min
                 # Always log score so we can see what's happening
+                # Fix #52 — surface proximity-skips with explicit tag so we can
+                # tell apart "score too low" from "scored A++ but ran past
+                # entry" (NBCC-class). The latter often hits TP1 on its own.
+                proximity_failed = (not result.proximity_ok) and comp.final_score >= effective_min
+                tag = "✅ ENTER" if will_enter else (
+                    "⚠ skip-proximity" if proximity_failed else "❌ skip"
+                )
                 print(
                     f"[Scorer] {sym:12} {s['setup_type']:20} "
                     f"score={comp.final_score:.1f} "
                     f"(sq={comp.setup_quality:.1f} vol={comp.volume_strength:.1f} "
                     f"mkt={comp.market_alignment:.1f} rs={comp.relative_strength:.1f} "
                     f"news={comp.news_sentiment:.1f}) "
-                    f"{'✅ ENTER' if will_enter else '❌ skip'}"
+                    f"{tag}"
                 )
 
                 if will_enter:
@@ -802,9 +809,15 @@ class TradingCrew:
                     scored.append(scored_item)
 
                 elif comp.final_score >= MIN_SCORE_WATCHLIST:
-                    # B-grade — add to watchlist
+                    # Fix #52 — distinguish proximity-failed (high-score signals
+                    # that ran past entry, often A++) from genuinely-weak signals
+                    # that landed in the watchlist band. Same destination, but
+                    # different counters so we can size the late-entry decision.
                     self._add_watchlist(sym, s, comp.final_score, result.reason)
-                    self._rej("score_below_gate_to_watchlist")
+                    if proximity_failed:
+                        self._rej("proximity_failed_to_watchlist")
+                    else:
+                        self._rej("score_below_gate_to_watchlist")
                 else:
                     self._rej("score_below_watchlist")
 
