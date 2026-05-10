@@ -65,10 +65,30 @@ LEADER_RS_DELTA_PCT     = 1.5
 VOLUME_MIN_RATIO        = 1.2
 VOLUME_STRONG_RATIO     = 1.5
 VOLUME_VERY_STRONG      = 2.5
-MOMENTUM_BO_MIN_RVOL    = 1.7   # Fix #22 (A1) → Fix #37 — relaxed from 2.0.
-                                # 2.0 was choking entries on otherwise-clean
-                                # breakouts. 1.7 still rejects truly weak vol
-                                # while letting moderate-RVOL trades through.
+MOMENTUM_BO_MIN_RVOL    = 2.0   # Fix #22 (A1) → Fix #37 1.7 → Fix #56 back to 2.0.
+                                # 280-trade audit: gross +0.075R / net -0.05R per
+                                # trade. Need to lift mean R to +0.30+. Tightening
+                                # RVOL floor is one lever. 1.7 was chasing fakeouts.
+
+# ─── Phase A — Setup gating + momentum tightening (Fix #56) ──────────────────
+# 280-trade audit (docs/08_Findings_From_280_Trades.md):
+#   - momentum_breakout: n=147, WR 66.7%, gross +0.159R — only viable setup
+#   - other 6 setups: gross-negative or break-even, paying full ₹760 cost on every fire
+#   - 71% stalled-no-movement rate UNCHANGED despite 55 fixes
+# Decision: disable 6 weak setups (keep their detection ON for confluence count,
+# but block them from entering trades). Tighten momentum_breakout to require
+# either confluence ≥ 2 OR top-3 sector membership.
+SETUP_DISARMED_LIST = {
+    "recovery_setup",     # n=72, gross -0.015R — bleeding
+    "failed_breakdown",   # n=31, WR 29% — too low
+    "vwap_reclaim",       # n=12, gross -0.022R — small sample, bleeding
+    "trend_pullback",     # n=10, gross -0.132R — bleeding
+    "vwap_pullback",      # n=7, WR 28.6% — too low
+    "range_breakout",     # n=1, irrelevant sample
+    "inside_bar_break",   # rolled into momentum_breakout via confluence
+}
+MOMENTUM_BO_MIN_CONFLUENCE        = 2     # require ≥ 2 confluence OR top-3 sector
+MOMENTUM_BO_REQUIRE_PRIORITY      = True  # global flag — set False to bypass for emergency rollback
 
 # ─── Score-based sizing tiers (Fix #23 / A6) ─────────────────────────────────
 # Higher conviction → larger position. Scales the per-trade risk cap (and thus

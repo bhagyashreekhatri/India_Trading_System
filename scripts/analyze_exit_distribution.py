@@ -24,13 +24,22 @@ from pathlib import Path
 from collections import Counter
 from datetime import datetime
 
-# ── Constants — realistic Indian intraday cost stack (₹) ───────────────────
-# Per round-trip on average ₹5,00,000 turnover position. See docs/07.
-COST_FIXED_PER_TRADE     = 226.0   # brokerage + STT + exchange + GST + SEBI + stamp
-COST_SPREAD_PER_TRADE    = 500.0   # 0.05% × 2 sides × ₹5L
-COST_SLIPPAGE_PER_TRADE  = 300.0   # 1bp entry + 5bp stop on ₹5L
-COST_TOTAL_PER_TRADE     = COST_FIXED_PER_TRADE + COST_SPREAD_PER_TRADE + COST_SLIPPAGE_PER_TRADE
-COST_PER_PARTIAL_EXIT    = COST_FIXED_PER_TRADE * 0.5 + 250  # half-position partial booking
+# ── Cost model — scales with ACTUAL position size, not a ₹5L assumption ───
+# Indian intraday equity (MIS) cost components, per round trip:
+#   Fixed:   ₹226 = brokerage ₹40 + STT ₹125 + exchange ₹32 + GST ₹13 + SEBI ₹1 + stamp ₹15
+#   Spread:  0.10% of position value (0.05% per side × 2)
+#   Slippage:0.06% of position value (1bp entry + 5bp stop)
+# Total variable component: 0.16% of position value
+COST_FIXED_INR        = 226.0
+COST_VARIABLE_PCT     = 0.0016   # 0.16% of position value
+
+def cost_per_trade(position_value_inr: float) -> float:
+    """Round-trip cost scaling with position size."""
+    return COST_FIXED_INR + position_value_inr * COST_VARIABLE_PCT
+
+def cost_per_partial(partial_position_value_inr: float) -> float:
+    """Cost of an extra mid-trade partial exit (TP1 booking on half position)."""
+    return COST_FIXED_INR * 0.5 + partial_position_value_inr * (COST_VARIABLE_PCT / 2)
 
 CLOSED_STATUSES = ("closed_win", "closed_loss", "closed_partial")
 
@@ -111,44 +120,37 @@ def classify_exit(exit_reason: str | None, status: str, tp1_hit: int) -> str:
 def simulate_single_target(rows: list[dict], target_r: float) -> dict:
     """
     What if every trade had a single fixed target at target_r (no partials)?
-
-    Approximation: we use realised pnl_r as a proxy for max-favourable-excursion.
-      - If realised pnl_r >= target_r: trade hits the target, P&L = target_r × position_risk
-      - If realised pnl_r < target_r and < 0: trade hits SL, P&L = -1R
-      - If realised pnl_r < target_r but > 0: trade exits at the actual realised R
-        (this is conservative — real MFE may have been higher)
-
-    Approximation note: WITHOUT candle replay we can only approximate. True MFE
-    requires re-fetching candles, which is Phase A+ work. This gives a decent
-    ranking even if absolute numbers are slightly under-counted.
+    Uses ACTUAL position size of each trade for cost calculation.
     """
     n_hit = 0
     n_sl  = 0
     n_other = 0
     total_pnl = 0.0
-    cost_per_trade = COST_TOTAL_PER_TRADE   # single round-trip cost (no double exit)
 
     for r in rows:
         pnl_r = r["pnl_r"] or 0.0
-        risk_inr = abs((r["entry_price"] or 0) - (r["initial_sl"] or r["stop_loss"] or 0)) * (r["quantity"] or 0)
-        if risk_inr == 0:
+        entry = r["entry_price"] or 0
+        qty   = r["quantity"] or 0
+        sl    = r["initial_sl"] or r["stop_loss"] or 0
+        risk_inr = abs(entry - sl) * qty
+        pos_value = entry * qty
+        if risk_inr == 0 or pos_value == 0:
             n_other += 1
             continue
 
+        c = cost_per_trade(pos_value)
+
         if pnl_r >= target_r:
-            # Trade hit the target
             simulated_pnl = target_r * risk_inr
             n_hit += 1
         elif pnl_r <= -1.0:
-            # Stopped out
             simulated_pnl = -1.0 * risk_inr
             n_sl += 1
         else:
-            # Stalled or partial — approximate as actual realised R
             simulated_pnl = pnl_r * risk_inr
             n_other += 1
 
-        total_pnl += simulated_pnl - cost_per_trade
+        total_pnl += simulated_pnl - c
 
     return {
         "target_r": target_r,
@@ -163,11 +165,18 @@ def simulate_single_target(rows: list[dict], target_r: float) -> dict:
 
 
 def actual_partials_pnl(rows: list[dict]) -> dict:
-    """Aggregate the actual P&L from the partials regime as it stood."""
+    """Aggregate actual P&L using per-trade position-scaled costs."""
     total_pnl_gross = sum((r["pnl"] or 0.0) for r in rows)
-    # Subtract cost: for every trade that hit TP1 (had a partial), pay COST_PER_PARTIAL_EXIT extra
-    n_partials = sum(1 for r in rows if r["tp1_hit"])
-    total_costs = len(rows) * COST_TOTAL_PER_TRADE + n_partials * COST_PER_PARTIAL_EXIT
+
+    total_costs = 0.0
+    n_partials = 0
+    for r in rows:
+        pos_value = (r["entry_price"] or 0) * (r["quantity"] or 0)
+        total_costs += cost_per_trade(pos_value)
+        if r["tp1_hit"]:
+            n_partials += 1
+            total_costs += cost_per_partial(pos_value * 0.5)
+
     return {
         "n_total":           len(rows),
         "n_partials_taken":  n_partials,
@@ -175,6 +184,7 @@ def actual_partials_pnl(rows: list[dict]) -> dict:
         "total_costs_inr":   round(total_costs, 0),
         "total_net_pnl":     round(total_pnl_gross - total_costs, 0),
         "avg_inr_per_trade": round((total_pnl_gross - total_costs) / max(1, len(rows)), 0),
+        "avg_cost_per_trade": round(total_costs / max(1, len(rows)), 0),
     }
 
 
@@ -313,7 +323,8 @@ def render_markdown(stats: dict, db_path: Path) -> str:
 
 {rationale}
 
-**Net P&L comparison after realistic Indian intraday costs (₹{COST_TOTAL_PER_TRADE:.0f}/trade fixed + ₹{COST_PER_PARTIAL_EXIT:.0f}/partial-exit):**
+**Net P&L comparison — costs scaled to actual per-trade position size**
+(avg cost: ₹{stats['actual_partials']['avg_cost_per_trade']:.0f}/trade — fixed ₹226 + 0.16% of position value):**
 
 | Strategy | Net P&L (₹) | Avg ₹/trade | Hit rate |
 |---|---:|---:|---:|
@@ -387,18 +398,16 @@ def render_markdown(stats: dict, db_path: Path) -> str:
 
 ## Methodology notes
 
-1. **Cost model.** Per-trade total cost ₹{COST_TOTAL_PER_TRADE:.0f}: brokerage ₹40 + STT ₹125 +
-   exchange charges ₹32 + GST ₹13 + SEBI ₹1 + stamp ₹15 = ₹226 fixed; plus realistic spread cost
-   ₹500 (0.05% × 2 sides × ₹5L) and slippage ₹300 (1bp entry + 5bp stop). Calibrated for ₹5L
-   average position size in MIS equity.
-2. **Partials extra cost ₹{COST_PER_PARTIAL_EXIT:.0f}.** Half-position TP1 booking pays half-fixed +
-   ₹250 spread/slip on the smaller leg.
+1. **Cost model — scales with actual position size.** Each trade's cost is computed from its
+   own (entry × qty), not a fixed assumption. Components: ₹226 fixed (brokerage+STT+exchange+
+   GST+SEBI+stamp) + 0.16% of position value (0.10% spread + 0.06% slippage).
+2. **Partials extra cost** = half-fixed (₹113) + 0.08% of half-position value, charged on every
+   trade where TP1 hit (i.e., one extra mid-trade exit was paid for).
 3. **Single-target simulation** approximates max-favourable-excursion using realised pnl_r. True
    MFE requires candle replay (Phase A+ work). The approximation is conservative — it under-
    counts trades that touched a higher target and reversed before exit, so simulated single-
    target hit rates are likely undercounted.
-4. **Net P&L** is gross sum minus per-trade fixed + partial-exit costs. Realistic for paper-to-
-   live calibration but assumes single ₹5L sizing across the dataset.
+4. **Net P&L** = gross trade P&L − all-in costs scaled to each trade's own position size.
 
 ---
 

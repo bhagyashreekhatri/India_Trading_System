@@ -23,8 +23,9 @@ from collections import defaultdict, Counter
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# Same cost model as exit-distribution analysis
-COST_PER_TRADE_INR = 226 + 500 + 300   # ₹1,026 round-trip total
+# Cost model — scales with actual position size (matches exit-dist analyzer)
+COST_FIXED_INR    = 226.0
+COST_VARIABLE_PCT = 0.0016    # 0.16% of position value (spread + slippage)
 
 CLOSED_STATUSES = ("closed_win", "closed_loss", "closed_partial")
 
@@ -125,13 +126,16 @@ def analyze_per_setup(rows: list[dict]) -> dict[str, dict]:
         rs = [r["pnl_r"] or 0 for r in trades]
         pnls = [r["pnl"] or 0 for r in trades]
 
-        # After-cost expectancy in R
-        # Approximation: convert ₹ cost to R using avg risk per trade
+        # After-cost expectancy in R — uses ACTUAL position size per trade
         avg_risk_inr = safe_avg([
             abs((r["entry_price"] or 0) - (r["initial_sl"] or r["stop_loss"] or 0)) * (r["quantity"] or 0)
             for r in trades
         ])
-        cost_in_r = (COST_PER_TRADE_INR / avg_risk_inr) if avg_risk_inr > 0 else 0
+        avg_pos_value = safe_avg([
+            (r["entry_price"] or 0) * (r["quantity"] or 0) for r in trades
+        ])
+        avg_cost_inr  = COST_FIXED_INR + avg_pos_value * COST_VARIABLE_PCT
+        cost_in_r = (avg_cost_inr / avg_risk_inr) if avg_risk_inr > 0 else 0
         expectancy_r_gross = safe_avg(rs)
         expectancy_r_net   = expectancy_r_gross - cost_in_r
 

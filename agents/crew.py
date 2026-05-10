@@ -49,6 +49,7 @@ from config.settings import (
     TARGET_R1, TARGET_R2, TIMEZONE,
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
     BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL, SCORE_SIZE_TIERS,
+    SETUP_DISARMED_LIST, MOMENTUM_BO_MIN_CONFLUENCE, MOMENTUM_BO_REQUIRE_PRIORITY,
     HOUR_GATE_NUDGES, LOSER_STREAK_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
@@ -583,17 +584,40 @@ class TradingCrew:
         for s in setups:
             sym = s["symbol"]
             try:
+                # ── Fix #56 / Phase A — Setup gating ────────────────────────
+                # 280-trade audit: only momentum_breakout shows positive gross
+                # R. The 6 other setups are net-negative drags. Disarmed via
+                # config flag (detection still runs for confluence_count).
+                setup_type = s.get("setup_type", "")
+                if setup_type in SETUP_DISARMED_LIST:
+                    self._rej(f"setup_disarmed_{setup_type}"); continue
+
                 # Volume + RS
                 vol_ratio, spread, rs_delta, liq = self._get_volume_rs(sym, nchg)
 
-                # ── A1 / Fix #22 — momentum_breakout volume hard-veto ───────
-                # Real breakouts come on volume. Reject momentum_breakout if
-                # RVOL < 2.0 — kills the #1 fakeout class (file 04 analysis).
-                if (s.get("setup_type") == "momentum_breakout"
+                # ── A1 / Fix #22 → Fix #56 — momentum_breakout volume veto ──
+                # RVOL floor 2.0 (raised back from 1.7 after 280-trade audit).
+                if (setup_type == "momentum_breakout"
                         and vol_ratio < MOMENTUM_BO_MIN_RVOL):
                     print(f"[Scorer] {sym} momentum_breakout RVOL={vol_ratio:.2f} "
                           f"< {MOMENTUM_BO_MIN_RVOL} — fakeout risk, skip")
                     self._rej("momentum_low_volume"); continue
+
+                # ── Fix #56 / Phase A — momentum priority filter ────────────
+                # Beyond RVOL, require either (a) confluence ≥ 2 (another
+                # detector also fired on this name) OR (b) sector in top-3
+                # by intraday breadth. This kills marginal momentum trades
+                # that have no second confirmation. Goal: mean R per trade
+                # from +0.075 → +0.30+.
+                if setup_type == "momentum_breakout" and MOMENTUM_BO_REQUIRE_PRIORITY:
+                    conf_n     = s.get("confluence_count", 1)
+                    sym_sector = s.get("sector", get_sector(sym))
+                    top_secs   = breadth_data.get("top_sectors", []) or []
+                    has_priority = (conf_n >= MOMENTUM_BO_MIN_CONFLUENCE) or (sym_sector in top_secs)
+                    if not has_priority:
+                        print(f"[Scorer] {sym} momentum_breakout no-priority "
+                              f"(conf={conf_n}, sector={sym_sector} not in {top_secs}) — skip")
+                        self._rej("momentum_no_priority"); continue
 
                 # News (Groq LLM — this is the ONLY LLM call)
                 has_news, news_score, catalyst, headline = self._get_news(sym)
