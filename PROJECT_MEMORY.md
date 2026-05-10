@@ -1,5 +1,55 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-04-28 | Phase 2 COMPLETE | Hardening fixes 1–7 deployed*
+*Last updated: 2026-05-08 | Fixes 1–55 deployed | Paper-trade validation phase*
+
+---
+
+## 🎯 NORTH STAR — DO NOT FORGET (re-stated 2026-05-08)
+
+**Goal: ₹1,000–₹5,000 per TRADE — scalper-pro mindset, NOT institutional hedge fund.**
+
+- Per-trade target, NOT per-day. Each trade stands alone.
+- Quality of trade > volume of trades. Idle is a valid state.
+- Think like a desk scalper watching the tape — not a quant optimising Sharpe.
+- Don't chase runaway names (proximity gate is correct). Wait for retest instead.
+- Size for the ₹ target, not for % of capital theory.
+- Filters protect from bad trades, they don't manufacture trades.
+- Stay paper for ~2 weeks; move to live with real money once metrics hold.
+- All code is production-grade — will handle real money soon.
+
+**When in doubt, ask: "Would a pro scalper take this trade?"** Not: "Does the model say take this trade?"
+
+---
+
+## 🧠 MINDSET HIERARCHY — DO NOT VIOLATE (re-stated 2026-05-08)
+
+**Scalper decides WHAT. Engineer decides HOW. Data decides WHO WAS RIGHT.**
+
+- Scalper-first philosophy, engineer-quality implementation underneath.
+- Trader-designed behavior, engineer-built implementation, data-validated evolution.
+- Architecture exists to SERVE execution quality — not the other way around.
+
+**Where they conflict, scalper wins, engineer adapts:**
+- Elegant abstraction that slows hot path > 100ms → engineer rebuilds ugly + fast.
+- "I want one rule, no boosters" → engineer does NOT sneak in weighted-pass logic.
+- "Skip if anything smells off" → engineer implements fail-closed defaults (skipped trade = safe; wrong trade = expensive).
+- Abstraction layers "for testability" that obscure setup/level/trigger/stop/invalidation → not built. Trade logic must remain readable in code.
+
+**Where engineer wins quietly (scalper doesn't think about these, but they keep us alive):**
+- Persistence + replay safety on crash mid-session.
+- Idempotent order placement (no double-fills on broker hiccups).
+- Atomic state transitions (no half-promoted focus names, no half-placed brackets).
+- Bounded retry with backoff on broker/data APIs.
+- Every reject logged with which rule failed; every state transition timestamped.
+
+**The product is: a scalper's brain in production-grade implementation.**
+NOT a scalper's chaos. NOT an engineer's abstraction.
+
+**When in doubt about a code decision, ask in order:**
+1. "Would a pro scalper take/skip this trade BECAUSE of this code?" (scalper test)
+2. "If this code crashes / fails / gets a stale value, does the system fail SAFE?" (engineer test)
+3. "Can we measure whether this decision was right at EOD?" (data test)
+
+If any of those three is "no" — the code isn't ready.
 
 ---
 
