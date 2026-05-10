@@ -90,6 +90,20 @@ SETUP_DISARMED_LIST = {
 MOMENTUM_BO_MIN_CONFLUENCE        = 2     # require ≥ 2 confluence OR top-3 sector
 MOMENTUM_BO_REQUIRE_PRIORITY      = True  # global flag — set False to bypass for emergency rollback
 
+# ─── Phase D — Pending pullback retest (Fix #57) ─────────────────────────────
+# 280-trade smoke test (docs/09_Phase_A_Smoke_Test.md) showed Phase A filters
+# improve mean R only +0.04 (0.075→0.114). 71% stall rate is structural —
+# entries land at exhaustion points after the move has already happened.
+# Phase D addresses entry timing: when a high-score signal fires but the price
+# has run past the trigger (proximity_failed), instead of skipping, mark it
+# PENDING_RETEST and watch 10 min for price to come back to the trigger ± 0.3%.
+# On retest, fire the entry. This catches NBCC-class moves cleanly.
+PENDING_RETEST_ENABLED         = True
+PENDING_RETEST_WINDOW_MIN      = 10      # watch for retest up to 10 min
+PENDING_RETEST_TOLERANCE_PCT   = 0.003   # retest = price within ±0.3% of trigger
+PENDING_RETEST_MAX_DRIFT_PCT   = 0.020   # if price runs > 2% past trigger, drop (chase no longer viable)
+PENDING_RETEST_LOG_PATH        = "logs/pending_retest.jsonl"
+
 # ─── Score-based sizing tiers (Fix #23 / A6) ─────────────────────────────────
 # Higher conviction → larger position. Scales the per-trade risk cap (and thus
 # qty). A++ = full, A+ = 75%, A = 50%, B = 25%. Combines multiplicatively with

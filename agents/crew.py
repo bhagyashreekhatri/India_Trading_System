@@ -36,6 +36,7 @@ from scoring.engine import (
 
 from tools.pattern_tools import _detect_setups_multi
 from tools.volume_tools   import _compute_breadth, _compute_sector_strength
+from tools.pending_pullback import PendingPullbackRegistry, ready_to_signal_dict
 from tools.telegram_tools import (
     alert_trade_entry, alert_tp1_hit, alert_trade_exit,
     alert_trailing_sl_moved, alert_consecutive_losses,
@@ -50,6 +51,8 @@ from config.settings import (
     TRAILING_SL_ENABLED, TRAILING_ATR_MULTIPLIER,
     BREADTH_BULLISH, BREADTH_BEARISH, MOMENTUM_BO_MIN_RVOL, SCORE_SIZE_TIERS,
     SETUP_DISARMED_LIST, MOMENTUM_BO_MIN_CONFLUENCE, MOMENTUM_BO_REQUIRE_PRIORITY,
+    PENDING_RETEST_ENABLED, PENDING_RETEST_WINDOW_MIN, PENDING_RETEST_TOLERANCE_PCT,
+    PENDING_RETEST_MAX_DRIFT_PCT, PENDING_RETEST_LOG_PATH,
     HOUR_GATE_NUDGES, LOSER_STREAK_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
@@ -184,9 +187,22 @@ class TradingCrew:
         # Fix #40 — bearish-breadth flag drives a -0.7 score penalty in scoring
         # (replaces the old tick-killing early return).
         self._breadth_bearish: bool = False
+        # Fix #57 / Phase D — pending-pullback retest registry. Catches NBCC-
+        # class A++ signals that proximity-failed; waits for retest instead
+        # of chasing or skipping. In-memory; lost on restart by design.
+        self._pending = PendingPullbackRegistry(
+            window_min=PENDING_RETEST_WINDOW_MIN,
+            tolerance_pct=PENDING_RETEST_TOLERANCE_PCT,
+            max_drift_pct=PENDING_RETEST_MAX_DRIFT_PCT,
+            log_path=PENDING_RETEST_LOG_PATH if PENDING_RETEST_ENABLED else None,
+        )
         # Clear yesterday's watchlist so dashboard shows only today's signals
         self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
+        if PENDING_RETEST_ENABLED:
+            print(f"[Crew] Phase D pending-retest active: window={PENDING_RETEST_WINDOW_MIN}min, "
+                  f"tolerance={PENDING_RETEST_TOLERANCE_PCT*100:.1f}%, "
+                  f"max_drift={PENDING_RETEST_MAX_DRIFT_PCT*100:.1f}%")
         alert_system_start()
 
     # ── Main entry point ──────────────────────────────────────────────────────
@@ -247,10 +263,51 @@ class TradingCrew:
         # 6. Score signals
         scored = self._score_signals(setups, self._regime_cache, self._breadth_cache, min_score=min_score)
 
+        # 6b. Fix #57 / Phase D — evaluate pending-retest queue. Any READY
+        # entries (price retested trigger ± tolerance) get appended to the
+        # scored list so the allocator's existing gates (kill switch, cooldown,
+        # spread filter, sector cap, RAG veto, live LTP refetch) all run.
+        if PENDING_RETEST_ENABLED and self._pending.count() > 0:
+            pending_fires = self._evaluate_pending_retest()
+            if pending_fires:
+                scored.extend(pending_fires)
+                # Re-sort so highest-score entries are placed first
+                scored.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+
         # 7. Allocate capital
         self._allocate(scored)
 
         return self._tick_summary(len(active), len(setups), len(scored))
+
+    # ── Phase D / Fix #57 — pending-retest evaluator ────────────────────────
+    def _evaluate_pending_retest(self) -> list[dict]:
+        """
+        Check live LTPs for all symbols in pending-retest queue. If any have
+        retested their trigger ± tolerance, convert them to scored-signal
+        dicts and return for allocation. Expired or drift-too-far entries
+        are silently dropped by the registry.
+        """
+        active = self._pending.get_active()
+        if not active:
+            return []
+        syms = [e.symbol for e in active]
+        try:
+            quotes = self.kite.get_quotes(syms)
+        except Exception as e:
+            print(f"[Pending] LTP fetch failed for retest evaluation: {e}")
+            return []
+        ltp_map = {sym: (quotes.get(sym, {}).get("last_price") or 0) for sym in syms}
+        ready_entries = self._pending.evaluate(ltp_map)
+        if not ready_entries:
+            return []
+        out = []
+        for e in ready_entries:
+            print(f"[Pending] ⚡ RETEST FIRED — {e.symbol} {e.setup_type} "
+                  f"score={e.score:.1f} trigger=₹{e.trigger_price:.2f} "
+                  f"ltp=₹{ltp_map.get(e.symbol, 0):.2f}")
+            self._rej("pending_retest_fired")
+            out.append(ready_to_signal_dict(e))
+        return out
 
     # ── Rejection telemetry (Fix #39) ────────────────────────────────────────
 
@@ -840,6 +897,37 @@ class TradingCrew:
                     self._add_watchlist(sym, s, comp.final_score, result.reason)
                     if proximity_failed:
                         self._rej("proximity_failed_to_watchlist")
+                        # ── Fix #57 / Phase D — pending-pullback retest ─────
+                        # Proximity-failed signals that would have entered:
+                        # mark for retest watch instead of just abandoning.
+                        # Eligibility: pending must be enabled, score ≥ entry
+                        # gate, drift between 0.7% (proximity threshold) and
+                        # max_drift (2.0%). Closer signals already entered.
+                        if PENDING_RETEST_ENABLED and comp.final_score >= effective_min:
+                            cur_price = s.get("current_price", s["entry_price"])
+                            drift = abs(cur_price - s["entry_price"]) / max(s["entry_price"], 1e-6)
+                            if drift <= PENDING_RETEST_MAX_DRIFT_PCT:
+                                # Build a complete signal dict for the registry
+                                # (it caches everything needed to fire later).
+                                pending_signal = {
+                                    **s,
+                                    "score_breakdown": {
+                                        "confluence_count": s.get("confluence_count", 1),
+                                        "confluence_mult":  conf_mult,
+                                        "sector_nudge":     sector_nudge,
+                                        "pdh_nudge":        pdh_nudge,
+                                        "breadth_pen":      breadth_pen,
+                                        "hist_nudge":       hist_nudge,
+                                    },
+                                }
+                                added = self._pending.add(
+                                    sym, pending_signal, comp.final_score, result.reason)
+                                if added:
+                                    self._rej("pending_retest_added")
+                                    print(f"[Pending] ⏳ {sym} added to retest queue "
+                                          f"(score={comp.final_score:.1f}, "
+                                          f"drift={drift*100:.2f}%, "
+                                          f"trigger=₹{s['entry_price']:.2f})")
                     else:
                         self._rej("score_below_gate_to_watchlist")
                 else:
