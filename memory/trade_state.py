@@ -291,11 +291,38 @@ class TradeStateManager:
                               tp2_price=r["tp2_price"],reason=r["reason"],
                               added_at=r["added_at"]) for r in rows]
 
-    def clear_old_watchlist(self):
-        """Delete watchlist entries older than today. Call at startup."""
-        today = date.today().isoformat()
+    def clear_old_watchlist(self, retention_days: int = 30):
+        """
+        Fix #58 — was wiping everything except today, which destroyed the
+        historical proximity-failed signal data we need to smoke-test Phase D
+        retest performance over time. Now retains `retention_days` (default 30)
+        of history. Dashboard's `get_watchlist()` still filters to today-only,
+        so UI is unchanged. Analytics scripts can use `get_watchlist_history()`
+        to query older entries.
+        """
+        from datetime import timedelta
+        cutoff = (date.today() - timedelta(days=retention_days)).isoformat()
         with self._conn() as conn:
-            conn.execute("DELETE FROM watchlist WHERE added_at NOT LIKE ?", (f"{today}%",))
+            conn.execute("DELETE FROM watchlist WHERE added_at < ?", (cutoff,))
+
+    def get_watchlist_history(self, days_back: int = 30) -> List[WatchlistItem]:
+        """
+        Fix #58 — return ALL watchlist entries from the last `days_back` days.
+        Used by Phase D analytics / smoke tests. Distinct from `get_watchlist()`
+        which is today-only for the dashboard.
+        """
+        from datetime import timedelta
+        cutoff = (date.today() - timedelta(days=days_back)).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM watchlist WHERE added_at >= ? ORDER BY added_at",
+                (cutoff,)
+            ).fetchall()
+        return [WatchlistItem(symbol=r["symbol"], setup_type=r["setup_type"],
+                              score=r["score"], entry_price=r["entry_price"],
+                              stop_loss=r["stop_loss"], tp1_price=r["tp1_price"],
+                              tp2_price=r["tp2_price"], reason=r["reason"],
+                              added_at=r["added_at"]) for r in rows]
 
     def get_today_trades(self) -> List[Position]:
         today = date.today().isoformat()
