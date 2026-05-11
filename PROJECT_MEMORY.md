@@ -1,5 +1,74 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-05-08 | Fixes 1–55 deployed | Paper-trade validation phase*
+*Last updated: 2026-05-11 13:55 IST | Operator: Bhagya*
+
+---
+
+# ⛔ READ THIS FIRST — EVERY SESSION, EVERY RESPONSE ⛔
+
+## THE THREE LAWS OF THIS PROJECT (locked permanent by operator, 2026-05-11)
+
+**Before writing one line of code. Before suggesting one fix. Before reading any log. Before answering any question. Internalise these three laws.**
+
+### LAW 1 — THINK LIKE A PRO TAPE-READING SCALPER, NOT LIKE A CODER WITH RULES
+
+A pro scalper does NOT think in categories like:
+- ❌ "Morning setups vs afternoon setups"
+- ❌ "Pre-lunch behavior vs post-lunch behavior"
+- ❌ "This sector works on Mondays"
+- ❌ "MOMENTUM_BREAKOUT peaks at 09:30-11:00"
+- ❌ "Filter X works better in afternoon"
+
+A pro scalper reads **three things, every moment, regardless of clock or calendar:**
+1. **Order flow** — is bid absorbing supply, or is supply hitting bids?
+2. **Structure** — higher highs / higher lows / fresh breakouts / failed breakouts / consolidation geometry
+3. **Execution physics** — spread, depth, RVOL relative to the stock's own history
+
+The clock is not a feature. The day-of-week is not a feature. The "lunch hour" is not a thing. Every minute the market is open, the only question is: **what is the tape telling me about this specific stock right now?**
+
+### LAW 2 — NO HARDCODING. EVER. ANYWHERE.
+
+**Forbidden in code AND in reasoning:**
+
+| Category | Forbidden | Required |
+|---|---|---|
+| Symbols | `if symbol == "IDEA"` | `for symbol in FULL_UNIVERSE` |
+| Sectors | `top_sectors = ["IT","PHARMA","METAL"]` | Dynamic ranking from live data |
+| Time gates | `if time(12,0) <= now <= time(13,30)` | No time gate; structural conditions only |
+| Time weights | `SETUP_TIME_WEIGHTS = {"MB":{"09-11":1.2}}` | Data-driven function over rolling history |
+| Detector names | `LUNCH_LULL_STEALTH`, `MORNING_BREAKOUT` | Structural: `TIGHT_BASE_ABSORPTION` |
+| Magic numbers | `if range > 0.015` (buried in code) | All thresholds in `config/settings.py` |
+| Day-of-week | `if today.weekday() == 4` | None — markets don't care |
+| Regime labels | `if regime == "PHARMA_LEADING_IT_FADING"` | Measure sector strength dynamically per-bar |
+
+**The test:** *"Would this rule work the same way if every symbol, sector, hour, and weekday were completely different from today's?"* If no → it's hardcoded → it's wrong → it goes in the trash.
+
+### LAW 3 — STRUCTURE IS THE RULE; TIME IS A CO-FEATURE WHOSE WEIGHT IS LEARNED, NEVER DECLARED
+
+If results appear to vary by time-of-day, the right question is **NOT** "should we add a time gate?" The right question is **"what structural feature varied that happens to correlate with time?"**
+
+Examples of correct re-framing:
+- Spread widens around 12:00-13:30 → build a **spread filter** (measures spread directly), not a "lunch filter"
+- Volume bursts in first 15 min → build an **RVOL filter** (measures volume directly), not an "opening filter"
+- Force-close at 15:15 is mechanical → build a **time-to-target check** at entry ("will this trade have runway?"), not a "no entries after 14:45 rule"
+- Specific setups underperform during low-volatility windows → build an **ATR/volatility filter** (measures volatility directly), not a "midday gate"
+
+The system never says "it's 12:30, change behavior." The system says "spread widened to 0.18%, change behavior" — and that happens to be true at 12:30 today and at 11:00 tomorrow during an unexpected news lull.
+
+---
+
+## 🚨 SELF-CHECK BEFORE EVERY RESPONSE
+
+Before sending any answer about this project, Claude must internally answer:
+
+1. **Did I use any phrase that references a clock category?** ("morning," "afternoon," "lunch," "pre-/post-lunch," "EOD as a setup type," etc.) → STOP, rewrite the reasoning structurally.
+
+2. **Did I propose any rule, detector, threshold, or filter that names a specific symbol, sector, or time window?** → STOP, generalise it.
+
+3. **Did I explain a result by referencing a time-of-day category?** ("it works at 10am because…", "it failed because it's afternoon…") → STOP. The real explanation is structural — find it.
+
+4. **Would a real desk scalper say what I just said, or would they look at me confused?** → If confused, rewrite.
+
+This isn't optional. This is the entry condition for every response.
 
 ---
 
@@ -17,6 +86,147 @@
 - All code is production-grade — will handle real money soon.
 
 **When in doubt, ask: "Would a pro scalper take this trade?"** Not: "Does the model say take this trade?"
+
+---
+
+## 🧬 GENERIC-FIRST DESIGN PRINCIPLE (mandated 2026-05-11 by operator)
+
+**NEVER HARDCODE. Every rule, detector, filter, threshold must be GENERIC and work on ANY symbol/sector/regime.**
+
+### Forbidden patterns (these are bugs even if they "work" today):
+
+❌ `if symbol == "IDEA": ...`
+❌ `if sector == "PHARMA": ...`
+❌ `if PHARMA_fading and IT_emerging: ...`
+❌ `top_sectors = ["IT", "PHARMA", "METAL"]` (anywhere in code that's not output of a function)
+❌ Magic numbers buried in detectors (`if range > 0.015`)
+❌ Day-specific rules (`if today == "expiry_day"`)
+❌ Hand-picked symbol lists in pattern detection logic
+❌ **Time-of-day gates on detectors** (`if not (time(12,0) <= now <= time(13,30)): return None`)
+❌ **Detectors named after times of day** (`LUNCH_LULL_STEALTH`, `MORNING_BREAKOUT`, `AFTERNOON_REVERSAL`)
+❌ **Hardcoded `setup_type → time_bucket → weight` tables** (`SETUP_TIME_WEIGHTS = {"MOMENTUM_BREAKOUT": {"09:30-11:00": 1.2}}`)
+❌ **Time-window "best setup / worst setup" playbooks** (any human-authored table of "this pattern works at this hour")
+
+### Required patterns:
+
+✅ `for symbol in FULL_UNIVERSE: ...` (iterate all)
+✅ `for sector in SECTOR_MAP.unique_values(): ...` (dynamic sector lookup)
+✅ Thresholds imported from `config/settings.py` or `config/thresholds.py`
+✅ Pattern-structure detection (count pushes, measure ranges, check ratios — never name-match)
+✅ Sector-size-adaptive thresholds (e.g. `threshold = max(3, len(stocks) // 4)`)
+
+### Application to all 5 new patterns being designed for EOD:
+
+| Pattern | Generic core |
+|---|---|
+| #70 STAIRCASE | "≥N upward pushes + higher consolidations + sustained vol" — works on any stock |
+| #71 Pre-TP1 trail | "+X.X R favorable + held Y min → move SL to BE+Z" — works on any trade |
+| #72 SECTOR_ROTATION_HANDOFF | "iterate SECTOR_MAP, count new-HODs and fades per sector" — any sector pair |
+| #73 PERSISTENT_LEADER | "stock making new HOD while ≥X% of its sector peers fade" — any sector |
+| #74 NEGATIVE_DAY_RECOVERY | "day_pct < 0 AND new HOD AND bounce > X% from low" — any stock |
+
+### Why this matters:
+
+Hardcoded rules look smart in backtest but **fail in live trading** because markets don't repeat the same patterns:
+- Today's PHARMA-IT rotation will be METALS-FMCG next week
+- Today's IDEA staircase will be DEVYANI staircase next month
+- Today's banking fakeout will be auto fakeout next session
+
+Generic rules survive regime changes. Hardcoded rules die.
+
+**Operator instruction (verbatim, 2026-05-11):**
+> "i dint want anything any bug to be hard coded..just make ur minset in a generic dynamic approach"
+
+This is a permanent design constraint. Every code change, every fix, every detector, every filter must pass the test:
+
+> **"Would this work the same way if the symbols/sectors involved were completely different?"**
+
+If the answer requires knowing today's specific names → it's hardcoded → it's wrong.
+
+### AMENDMENT 2026-05-11 (12:25 IST) — Time-of-day is NOT exempt
+
+Operator caught a same-day violation: Claude proposed a `LUNCH_LULL_STEALTH_BREAKOUT` detector gated to 12:00-13:30 IST and a `SETUP_TIME_WEIGHTS` dict mapping setups to time windows. Both were classic temporal overfit.
+
+**Operator instruction (verbatim, 2026-05-11):**
+> "this hard coding as per time zone are u sure its generic? we already discussed right? when ever u fix bugs or write code or design architectire it should be generic. example 12:00 - 13:30 BID_ASK_ABSORPTION, LUNCH_LULL_STEALTH, STAIRCASE not necessary every day.. some times BID_ASK_ABSORPTION, LUNCH_LULL_STEALTH, STAIRCASE this setups also can trugger ate 11:00 or 2:00"
+
+**Permanent rules added:**
+
+1. **No detector may be named after a time of day.** The pattern definition lives in its structure (e.g. "tight base + fresh HOD + bid absorption"), not in its hour.
+
+2. **No detector may be gated by clock time.** A pattern fires whenever its structural conditions occur — at 09:45, 11:00, 12:15, or 14:30 — equally.
+
+3. **No human writes a `setup → time_bucket → weight` table.** Time-of-day weighting comes from data: a function reads each setup's rolling-N-day historical expectancy in the current time bucket and returns `expectancy_bucket / expectancy_global`. Cold-start default = 1.0 (neutral).
+
+4. **Same-day clusters are evidence, not rules.** If a pattern happens 3 times in one hour on one day, that is a coincidence of the tape. The rule is the structural mechanism, not the clock.
+
+5. **The renaming convention is enforced:** if a proposed detector name contains "LUNCH", "MORNING", "AFTERNOON", "CLOSING", or any other temporal word, rename it to describe the structural mechanic instead.
+
+**Concrete corrections made today:**
+- `LUNCH_LULL_STEALTH_BREAKOUT` → `TIGHT_BASE_ABSORPTION_BREAKOUT`
+- `SETUP_TIME_WEIGHTS` hardcoded dict → `get_setup_context_weight(setup_type, context)` data-driven function reading from `trade_state.db`
+- "Time-window playbook" table → DELETED
+
+**The meta-principle:** Time is a feature, not a gate. Structure is the rule, time is a co-feature whose weight is learned, not declared.
+
+### DEEPER AMENDMENT 2026-05-11 (13:50 IST) — Drop clock categories from REASONING, not just from code
+
+Operator caught Claude reverting to clock-shaped reasoning **even after locking the no-clock-gates rule into the code design**. The phrase Claude used: *"if these picks fail, the filter doesn't work in afternoon conditions."*
+
+**Operator instruction (verbatim, 2026-05-11):**
+> "one thing can u explain me when real human scalper do trading ...does he even look at what is working in morning, afternoon, even, post lunch, pre lunch etc etc..its market..any time any ticker at any momet will go up n come down. filter doesn't work in afternoon conditions,? what is this?"
+
+**The deeper principle (locked permanent):**
+
+A pro tape-reader does not maintain mental categories of "morning behavior" vs "afternoon behavior." They read three structural things at every moment:
+1. Order flow — is bid absorbing supply or is supply hitting bids?
+2. Structure — higher-highs / higher-lows / fresh breakouts / failed breakouts / consolidation geometry
+3. Execution physics — spread, depth, RVOL relative to history
+
+**These three reads have NO clock dependence.** Saying "bid/sell ≥ 1.5 represents buyer absorption" is a true statement about market microstructure at any instant. It is equally true at 09:45, 11:17, 14:45, and on options-expiry Thursdays.
+
+**The only things that legitimately vary through the day:**
+- Liquidity profile (measure spread + depth, not the clock)
+- Time-to-force-close (a physical constraint on position runway, not a market truth)
+
+**Forbidden in REASONING (not just code):**
+- ❌ "This rule works better in the morning"
+- ❌ "Setups change after lunch"
+- ❌ "Filter fails in afternoon conditions"
+- ❌ Any sentence where the explanation for a result references a time-of-day category
+
+**Required in REASONING:**
+- ✅ "The filter passed/failed because of [structural property X]"
+- ✅ "The threshold is wrong because [order-flow measurement Y]"
+- ✅ "Liquidity at the entry moment was [N basis points spread + M lots depth]" (measurement, not clock)
+
+If a result varies by time-of-day, the right question is: **what structural feature varied that correlates with time-of-day?** Then build the filter on that feature, not on time.
+
+Examples:
+- Spread widens 12:00-13:30 → build a spread filter, not a "lunch filter"
+- Volume bursts at open → build an RVOL filter, not an "open filter"
+- Force-close at 15:15 → build a "time-to-target" check on the entry, not a "no entries after 14:45" rule
+
+**This principle applies retroactively to existing fixes:**
+- Fix #46 ("ORB only fires 09:30-10:30 IST") — needs re-examination. The real rule is probably "ORB only fires when the opening range is structurally complete AND no fresh data has invalidated it." That should auto-fire at the right moment without a clock gate.
+- Fix #34 ("EOD partial unwind at 14:45") — needs to be re-thought as "begin position-runway evaluation when time-to-force-close < expected-time-to-target."
+- Fix #35 ("Dynamic lunch-window gate") — needs to be re-thought as "raise threshold when measured per-trade slippage exceeds N basis points," not when the clock says 12-13.
+
+This rewrite work isn't urgent (none of these are currently losing money structurally) but goes on the principle-cleanup queue.
+
+---
+
+## 🛑 INTENTIONAL BEHAVIORS — DO NOT "FIX" THESE (added 2026-05-11)
+
+These look like bugs but are real scalper-pro features. Future Claude should NOT propose to "fix" them.
+
+**First 30-40 min blindness (09:15-09:55 IST):**
+- Setup detection requires VWAP-with-candles which uses 5-min bars, needs ≥ 8 today bars
+- Math: 8 × 5 min = 40 min after open → first setup detection 09:55 IST
+- WHY THIS IS CORRECT: Opening 15-30 min is fakeout central — gap-up exhaustion, operator stop-runs, retail panic. Validated 2026-05-11 when THERMAX spiked +3% at 09:30 then crashed back to flat by 09:35. Any chase at the breakout would have been stopped out immediately.
+- The system intentionally lets the tape settle before acting. Pro scalpers avoid the open for the same reason.
+- See also: Fix #46 (ORB time-window enforcement 09:30-10:30) — same wisdom encoded explicitly.
+- **If a future analysis says "we're missing the first hour, let's fix it" — STOP. Read this note. Validate against actual fakeout rate on first-30-min trades before changing anything.**
 
 ---
 

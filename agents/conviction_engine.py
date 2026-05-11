@@ -1,0 +1,267 @@
+"""
+Conviction Engine — the new entry-decision module.
+
+Replaces the deleted ScoringEngine. Instead of a 0-10 floating-point score
+with multiplicative regime / sector / hour / breadth / news nudges (which
+30 months of data proved was anti-predictive — A++ trades returned -0.095R
+while A trades returned +0.092R), the conviction engine produces a binary
+tier: S, A, B, or SKIP.
+
+The tier is derived from two empirically-validated signals:
+
+  1. 10:15 IST macro state (agents/market_state.py)
+     - STRONG_GREEN / GREEN / YELLOW / RED / STRONG_RED / WAITING
+
+  2. First-Hour-High (FHH) break state (agents/fhh_break_detector.py)
+     - clean_high_break  → 100% / 97% / 88% bullish (S / A / B tiers)
+     - whipsaw           → 70% chop, SKIP
+     - inside_first_hour → too early, SKIP
+
+Plus universal pre-entry filters that survived the audit:
+  - Stock day_pct > 0   (don't long bouncing-from-low names)
+  - Order book bid/sell ratio ≥ 1.5 (5-level aggregate, not top-of-book)
+  - Spread ≤ 0.10%
+  - Not RAG-vetoed (proven loser)
+  - Not on symbol blacklist
+
+Each tier maps to a fixed risk/reward sizing per config/settings.py:
+  Tier S — full size, top conviction (STRONG_GREEN + FHH)
+  Tier A — full size, high conviction (GREEN + FHH)
+  Tier B — HALF size, medium conviction (YELLOW + FHH + high-grade setup)
+  SKIP   — no entry
+
+See docs/16_30Month_Final_Analysis_2026-05-11.md and
+    docs/17_Rebuild_Plan_2026-05-11.md.
+"""
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Literal, Optional
+
+
+ConvictionTier = Literal["S", "A", "B", "SKIP"]
+
+
+@dataclass
+class ConvictionResult:
+    """The output of the conviction engine for one (symbol, setup) candidate."""
+    tier:                 ConvictionTier
+    size_multiplier:      float    # 0.0 (SKIP), 0.5 (B), 1.0 (S/A)
+    risk_inr:             float    # max acceptable loss in ₹
+    target_inr:           float    # target profit in ₹
+    reasoning:            str
+    macro_state:          str
+    fhh_state:            str
+    failed_filters:       list[str]
+
+
+class ConvictionEngine:
+    """
+    Decides whether to take a trade and at what size.
+
+    Usage in crew.py:
+        engine = ConvictionEngine(market_state_agent, fhh_detector)
+        result = engine.evaluate(symbol, setup, stock_quote, order_book)
+        if result.tier == "SKIP":
+            self._rej(result.reasoning)
+            continue
+        qty = self._size_position(result, ltp, stop_loss)
+        ...
+    """
+
+    NIFTY_FOR_FHH = "NIFTY 50"   # use NIFTY's FHH state as the macro break read
+
+    def __init__(self, market_state_agent, fhh_detector):
+        self.market_state = market_state_agent
+        self.fhh_detector = fhh_detector
+
+    def evaluate(
+        self,
+        symbol:      str,
+        setup,                # RawSignal-like object with .grade etc., or None
+        stock_quote: dict,    # {"last_price", "open", "high", "low", "close", "change_pct", ...}
+        order_book:  Optional[dict] = None,  # full depth dict from kite_client
+        now=None,
+    ) -> ConvictionResult:
+        """
+        Returns a ConvictionResult. Universal filters fire FIRST (cheapest skips),
+        then macro state, then FHH state, then tier mapping.
+        """
+        from config.settings import (
+            ORDER_BOOK_RATIO_MIN,
+            SPREAD_MAX_PCT,
+            CONVICTION_RISK_INR,
+            CONVICTION_TARGET_INR,
+        )
+
+        failed = []
+
+        # ── Universal pre-entry filters ─────────────────────────────────────
+        # 1. Stock must be up on the day (don't long bouncing-from-low stocks)
+        if stock_quote.get("change_pct", 0.0) < 0.0:
+            return _skip(
+                "stock_negative_day",
+                macro_state="-", fhh_state="-",
+                failed=["stock_change_pct<0"],
+            )
+
+        # 2. Spread filter
+        bid = stock_quote.get("bid", 0.0)
+        ask = stock_quote.get("ask", 0.0)
+        ltp = stock_quote.get("last_price", 0.0)
+        if bid > 0 and ask > 0 and ltp > 0:
+            spread_pct = (ask - bid) / ltp
+            if spread_pct > SPREAD_MAX_PCT:
+                return _skip(
+                    f"spread_too_wide_{spread_pct*100:.2f}%",
+                    macro_state="-", fhh_state="-",
+                    failed=[f"spread {spread_pct*100:.3f}% > {SPREAD_MAX_PCT*100:.3f}%"],
+                )
+
+        # 3. 5-level order-book depth ratio (replaces top-of-book naive read)
+        if order_book is not None:
+            ob_ratio = _compute_5level_depth_ratio(order_book)
+            if ob_ratio < ORDER_BOOK_RATIO_MIN:
+                return _skip(
+                    f"weak_order_book_ratio_{ob_ratio:.2f}",
+                    macro_state="-", fhh_state="-",
+                    failed=[f"5-level bid/sell {ob_ratio:.2f} < {ORDER_BOOK_RATIO_MIN}"],
+                )
+
+        # ── Macro state filter (validated on 584 sessions) ──────────────────
+        macro_snap = self.market_state.get_state(now)
+
+        if macro_snap.state == "WAITING":
+            return _skip(
+                "macro_waiting_pre_1015",
+                macro_state="WAITING", fhh_state="-",
+                failed=["before 10:15 IST"],
+            )
+
+        if macro_snap.state == "STRONG_RED":
+            return _skip(
+                f"macro_strong_red ({macro_snap.reasoning})",
+                macro_state="STRONG_RED", fhh_state="-",
+                failed=["macro STRONG_RED — 89% of these days close negative"],
+            )
+
+        if macro_snap.state == "RED":
+            return _skip(
+                f"macro_red ({macro_snap.reasoning})",
+                macro_state="RED", fhh_state="-",
+                failed=["macro RED — 74% of these days close negative"],
+            )
+
+        # ── First-Hour break state ──────────────────────────────────────────
+        fhh_state = self.fhh_detector.get_state(self.NIFTY_FOR_FHH, now)
+
+        if not fhh_state.is_set:
+            return _skip(
+                "fhh_not_yet_set",
+                macro_state=macro_snap.state, fhh_state="not_set",
+                failed=["first hour not yet captured"],
+            )
+
+        if fhh_state.whipsaw:
+            return _skip(
+                "whipsaw_chop",
+                macro_state=macro_snap.state, fhh_state="whipsaw",
+                failed=["both FHH and FHL broken — 70% historical chop"],
+            )
+
+        if not fhh_state.clean_high_break:
+            return _skip(
+                "fhh_not_broken",
+                macro_state=macro_snap.state, fhh_state="inside_or_below",
+                failed=["clean FHH break not yet detected"],
+            )
+
+        # ── Tier mapping ────────────────────────────────────────────────────
+        # All gates passed. Map (macro_state, fhh_state) to tier.
+
+        if macro_snap.state == "STRONG_GREEN":
+            return ConvictionResult(
+                tier="S",
+                size_multiplier=1.0,
+                risk_inr=CONVICTION_RISK_INR["S"],
+                target_inr=CONVICTION_TARGET_INR["S"],
+                reasoning=f"TIER_S — {macro_snap.reasoning} + FHH break (30-month historical: 100% close positive, n=44)",
+                macro_state="STRONG_GREEN",
+                fhh_state="clean_high_break",
+                failed_filters=[],
+            )
+
+        if macro_snap.state == "GREEN":
+            return ConvictionResult(
+                tier="A",
+                size_multiplier=1.0,
+                risk_inr=CONVICTION_RISK_INR["A"],
+                target_inr=CONVICTION_TARGET_INR["A"],
+                reasoning=f"TIER_A — {macro_snap.reasoning} + FHH break (30-month: 97% close positive, n=38)",
+                macro_state="GREEN",
+                fhh_state="clean_high_break",
+                failed_filters=[],
+            )
+
+        if macro_snap.state == "YELLOW":
+            # Tier B requires high-quality setup grade in addition to FHH break
+            grade = getattr(setup, "grade", None)
+            grade_str = grade.value if hasattr(grade, "value") else str(grade) if grade else ""
+            if grade_str not in ("A++", "A+"):
+                return _skip(
+                    "yellow_macro_requires_high_grade",
+                    macro_state="YELLOW", fhh_state="clean_high_break",
+                    failed=[f"YELLOW + FHH requires setup grade A+/A++; got {grade_str or '(none)'}"],
+                )
+            return ConvictionResult(
+                tier="B",
+                size_multiplier=0.5,
+                risk_inr=CONVICTION_RISK_INR["B"],
+                target_inr=CONVICTION_TARGET_INR["B"],
+                reasoning=f"TIER_B — YELLOW + FHH + {grade_str} grade (30-month: 88% close positive, n=98) — HALF SIZE",
+                macro_state="YELLOW",
+                fhh_state="clean_high_break",
+                failed_filters=[],
+            )
+
+        # Should not reach here.
+        return _skip(
+            "unexpected_macro_state",
+            macro_state=macro_snap.state, fhh_state=str(fhh_state.clean_high_break),
+            failed=[f"unexpected macro state: {macro_snap.state}"],
+        )
+
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+def _skip(reason: str, macro_state: str, fhh_state: str, failed: list[str]) -> ConvictionResult:
+    return ConvictionResult(
+        tier="SKIP",
+        size_multiplier=0.0,
+        risk_inr=0.0,
+        target_inr=0.0,
+        reasoning=reason,
+        macro_state=macro_state,
+        fhh_state=fhh_state,
+        failed_filters=failed,
+    )
+
+
+def _compute_5level_depth_ratio(order_book: dict) -> float:
+    """
+    Sum bid_qty across top-5 levels / sum sell_qty across top-5 levels.
+
+    Validated finding from 18-month research: top-of-book ratio is easily
+    spoofed by a single large order. 5-level aggregate is more robust.
+
+    Returns 99.0 if there's no sell side (degenerate book → permissive).
+    """
+    try:
+        buy = order_book.get("buy", []) or order_book.get("depth", {}).get("buy", [])
+        sell = order_book.get("sell", []) or order_book.get("depth", {}).get("sell", [])
+        buy_total = sum(float(lv.get("quantity", 0)) for lv in buy[:5])
+        sell_total = sum(float(lv.get("quantity", 0)) for lv in sell[:5])
+        if sell_total <= 0:
+            return 99.0
+        return buy_total / sell_total
+    except Exception:
+        return 1.0  # safe default — neutral

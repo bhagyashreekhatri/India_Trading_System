@@ -172,6 +172,24 @@ class TradingCrew:
         self.state   = TradeStateManager()
         self.chroma  = ChromaMemory()
         self.engine  = ScoringEngine()
+
+        # ── Phase 0 rebuild (2026-05-11) — conviction-engine pipeline ──
+        # The 10:15 IST macro filter + FHH break combo replaces the deleted
+        # ScoringEngine multipliers. Validated on 584 NIFTY sessions across
+        # 30 months (Jan 2024 – May 2026). See docs/16_30Month_Final_Analysis.
+        # Feature-flagged via USE_CONVICTION_ENGINE in config/settings.py for
+        # safe shadow-mode rollout — the existing scoring path still runs;
+        # the conviction engine fires as an additional gate at the top of
+        # _allocate.
+        from agents.market_state import MarketStateAgent
+        from agents.fhh_break_detector import FhhBreakDetector
+        from agents.conviction_engine import ConvictionEngine
+
+        self.market_state  = MarketStateAgent(self.kite)
+        self.fhh_detector  = FhhBreakDetector(self.kite)
+        self.conviction    = ConvictionEngine(self.market_state, self.fhh_detector)
+        print("[Crew] Conviction-engine pipeline loaded (Phase 0 rebuild)")
+
         self._tick   = 0
         self._breadth_cache: dict = {}    # refreshed every ~15 min
         self._regime_cache:  dict = {}
@@ -1029,6 +1047,17 @@ class TradingCrew:
                 print(f"[Allocator] 🟡 +2R PROFIT — tightened gate to 8.0; "
                       f"{pre_count} → {len(scored)} candidates remain")
 
+        # ── PHASE 0 CONVICTION ENGINE — additional gate (2026-05-11) ──────
+        # Replaces the deleted ScoringEngine multipliers. Fires before all the
+        # existing filters as an early-skip. Validated on 584 NIFTY sessions:
+        #   STRONG_GREEN macro + FHH break → 100% close positive (n=44)
+        #   STRONG_RED macro              → 89% close negative, NEVER LONG
+        # Feature-flagged via USE_CONVICTION_ENGINE — flip to False to roll back.
+        try:
+            from config.settings import USE_CONVICTION_ENGINE
+        except ImportError:
+            USE_CONVICTION_ENGINE = False  # fail-safe: old path
+
         for s in scored:
             sym    = s["symbol"]
             sector = s.get("sector", get_sector(sym))
@@ -1041,6 +1070,49 @@ class TradingCrew:
             # Already in this stock
             if any(p.symbol == sym for p in open_pos):
                 self._rej("already_open"); continue
+
+            # ── Conviction engine pre-filter ──────────────────────────────
+            # This is the heart of the Phase 0 rebuild. Macro state + FHH
+            # break decide whether to take the trade and at what tier.
+            # When the macro filter says STRONG_RED, this skips the entry
+            # before any of the legacy filters run. Cheap, structural,
+            # 30-month-validated.
+            conviction_result = None
+            if USE_CONVICTION_ENGINE:
+                try:
+                    live_q_for_conv = self.kite.get_quotes([sym])
+                    stock_quote = live_q_for_conv.get(sym, {})
+                    # Best-effort: fetch order book if available
+                    order_book = None
+                    try:
+                        order_book = self.kite.get_quotes([sym]).get(sym, {}).get("depth")
+                    except Exception:
+                        pass
+                    # Build minimal setup-like object the engine can read .grade from
+                    class _SetupView:
+                        def __init__(self, grade): self.grade = grade
+                    setup_view = _SetupView(s.get("grade"))
+                    conviction_result = self.conviction.evaluate(
+                        symbol=sym,
+                        setup=setup_view,
+                        stock_quote=stock_quote,
+                        order_book=order_book,
+                    )
+                    if conviction_result.tier == "SKIP":
+                        print(f"[Conviction] {sym} SKIP — {conviction_result.reasoning}")
+                        self._rej(f"conviction_{conviction_result.reasoning[:30]}")
+                        continue
+                    else:
+                        print(f"[Conviction] {sym} TIER_{conviction_result.tier} — {conviction_result.reasoning}")
+                        # Stash result on the scored dict so sizing can use it later
+                        s["conviction_tier"]    = conviction_result.tier
+                        s["conviction_risk"]    = conviction_result.risk_inr
+                        s["conviction_target"]  = conviction_result.target_inr
+                        s["conviction_size_mult"] = conviction_result.size_multiplier
+                except Exception as e:
+                    # Conviction engine errors should NEVER block trading — fail open
+                    # to the legacy path. The error gets logged for diagnosis.
+                    print(f"[Conviction] error on {sym}, falling back to legacy: {e}")
 
             # ── Symbol auto-blacklist (Fix #27 / D2) ─────────────────────────
             if self.state.is_symbol_blacklisted(sym):

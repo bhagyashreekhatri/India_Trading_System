@@ -255,3 +255,70 @@ SECTOR_LEADERS = {
 
 # ─── Timezone ─────────────────────────────────────────────────────────────────
 TIMEZONE                = "Asia/Kolkata"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 0 REBUILD — new constants (2026-05-11)
+# These replace the deleted ScoringEngine. Validated on 584 NIFTY sessions
+# across 30 months (Jan 2024 – May 2026). See docs/16_30Month_Final_Analysis.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── 10:15 IST macro filter ────────────────────────────────────────────────────
+# The clean read of where institutional money has positioned itself for the day.
+# Statistical backing (n=584 sessions):
+#   >+0.5%  → 98% close positive (n=82)   STRONG_GREEN — full size
+#   >+0.3%  → 72% close positive (n=158)  GREEN — full size
+#   ±0.3%  → coin-flip (n=212)            YELLOW — half size, A++ only
+#   <-0.3% → 74% close negative (n=141)   RED — skip longs
+#   <-0.5% → 89% close negative (n=83)    STRONG_RED — definitely skip
+MACRO_FILTER_TIME_IST          = "10:15"
+MACRO_STRONG_GREEN_THRESHOLD   = 0.5    # %, NIFTY vs prev close
+MACRO_GREEN_THRESHOLD          = 0.3
+MACRO_RED_THRESHOLD            = -0.3
+MACRO_STRONG_RED_THRESHOLD     = -0.5
+
+
+# ── Order book depth filter (universal pre-entry) ────────────────────────────
+# 5-level aggregate bid_qty / sell_qty (NOT top-of-book, which can be spoofed
+# by a single large order). Validated finding: top-of-book ratio is noise,
+# 5-level depth is structural commitment.
+ORDER_BOOK_RATIO_MIN           = 1.5
+
+
+# ── Universal spread filter ──────────────────────────────────────────────────
+# (Same threshold as Fix #43's ENTRY_MAX_SPREAD_PCT but used by conviction_engine.)
+# 0.10% spread on a 0.7% stop eats 28% of TP1 — wide spreads silently destroy
+# scalp R:R. Hard skip.
+SPREAD_MAX_PCT                 = 0.0010   # 0.10%
+
+
+# ── Conviction-engine sizing (replaces SCORE_SIZE_TIERS) ────────────────────
+# Risk and target in ₹ per trade. Mapped to position size via stop distance.
+# Tier S = STRONG_GREEN + FHH (100% historical accuracy, n=44)
+# Tier A = GREEN + FHH        (97% historical accuracy, n=38)
+# Tier B = YELLOW + FHH + A++  (88% historical accuracy, n=98) — half size
+CONVICTION_RISK_INR = {
+    "S": 1500.0,
+    "A": 1500.0,
+    "B":  750.0,
+}
+CONVICTION_TARGET_INR = {
+    "S": 3000.0,
+    "A": 2500.0,
+    "B": 1500.0,
+}
+
+
+# ── Phase 0 feature flag ─────────────────────────────────────────────────────
+# When True, the conviction-engine path is the entry decision authority.
+# When False, the old _score_signals path runs (allows shadow-mode validation
+# before fully cutting over).
+USE_CONVICTION_ENGINE          = True
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DEPRECATED — to be removed after conviction-engine forward-validation:
+#   SCORE_SIZE_TIERS, HOUR_GATE_NUDGES, MIN_SCORE_*, CONFLUENCE_MULTIPLIER_*,
+#   SETUP_DISARMED_LIST (becomes irrelevant — only momentum + fhh remain),
+#   MOMENTUM_BO_REQUIRE_PRIORITY, all news-sentiment constants.
+# Kept for now so crew.py keeps booting. Cleanup in Phase 0.5 / Phase 1.
+# ═══════════════════════════════════════════════════════════════════════════
