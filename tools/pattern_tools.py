@@ -522,10 +522,15 @@ def _detect_setups_multi(
     symbol:  str,
 ) -> list[dict]:
     """
-    Detect ALL setups that fire for the given bar — not just the first match.
-    Order in the returned list is priority-descending; same as the legacy
-    `_detect_all_setups` priority chain. The crew picks element [0] as the
-    primary signal and uses len(list) for confluence scoring.
+    Detect all setups for the given bar. PHASE 0.6 rebuild (2026-05-11):
+
+    Only MOMENTUM_BREAKOUT is now actively detected. The other 6 detectors
+    (ORB, FAILED_BREAKDOWN, TREND_PULLBACK, INSIDE_BAR_BREAK, RECOVERY_SETUP,
+    VWAP_RECLAIM, VWAP_PULLBACK, RANGE_BREAKOUT) have been removed from this
+    function because the 280-trade audit (docs/08_Findings_From_280_Trades.md)
+    showed they were all net-negative after costs. Their detector functions
+    remain in this file as unused helpers — kept for potential conditional
+    re-arming on GREEN macro days in Phase 1 (per the 30-month research).
 
     Returns list of signal dicts; empty list if no setup detected.
     """
@@ -539,60 +544,7 @@ def _detect_setups_multi(
     br, cp = _candle_quality(last.to_dict())
     atr = _atr(df)
 
-    # ── 1. ORB breakout ──────────────────────────────────────────────────────
-    orb = _detect_orb_breakout(symbol, df, current, atr)
-    if orb:
-        matches.append(orb)
-
-    # ── 2. Failed Breakdown ──────────────────────────────────────────────────
-    fb = _detect_failed_breakdown(df, vwap, current, symbol, atr)
-    if fb:
-        matches.append(fb)
-
-    # ── 2b. Trend Pullback (Fix #10) — strong-mover second-leg entry ─────────
-    tp = _detect_trend_pullback(df, current, symbol, atr)
-    if tp:
-        matches.append(tp)
-
-    # ── 2c. Inside-Bar Breakout (Fix #12) — compression-then-break ───────────
-    ib = _detect_inside_bar_break(df, vwap, current, symbol, atr)
-    if ib:
-        matches.append(ib)
-
-    # ── 3. Recovery setup ────────────────────────────────────────────────────
-    below = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] < vwap)
-    if (below >= 3
-            and last["close"] > vwap
-            and last["close"] > last["open"]
-            and br >= 0.5):
-        sl = _sl_from_atr(last["close"], atr)
-        matches.append(_make_signal(symbol, SetupType.RECOVERY_SETUP, "long",
-                            round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Recovery: was below VWAP {below} candles, now reclaiming {vwap:.2f}"))
-
-    # ── 4. VWAP Reclaim ──────────────────────────────────────────────────────
-    if (prev["close"] < vwap
-            and last["close"] > vwap
-            and last["close"] > last["open"]
-            and br >= 0.45):
-        entry = round(vwap * 1.001, 2)
-        sl    = _sl_from_atr(entry, atr)
-        matches.append(_make_signal(symbol, SetupType.VWAP_RECLAIM, "long",
-                            entry, sl, atr, current, br, cp,
-                            f"VWAP reclaim at {vwap:.2f}"))
-
-    # ── 5. VWAP Pullback ─────────────────────────────────────────────────────
-    above = sum(1 for i in range(-6, -2) if df.iloc[i]["close"] > vwap)
-    if (above >= 3
-            and prev["low"] <= vwap * 1.002
-            and last["close"] > vwap
-            and br >= 0.4):
-        sl = _sl_from_atr(round(last["close"], 2), atr)
-        matches.append(_make_signal(symbol, SetupType.VWAP_PULLBACK, "long",
-                            round(last["close"], 2), sl, atr, current, br, cp,
-                            f"VWAP pullback reclaim after {above} candles above VWAP"))
-
-    # ── 6. Momentum Breakout ─────────────────────────────────────────────────
+    # ── MOMENTUM_BREAKOUT (only active setup) ────────────────────────────────
     recent_high = float(df["high"].iloc[-7:-1].max())
     # Fix #29 (A4) — range expansion: trigger bar must show momentum, not fade.
     try:
@@ -620,22 +572,12 @@ def _detect_setups_multi(
                             f"Momentum breakout above {recent_high:.2f} & VWAP "
                             f"(range {cur_range:.2f} ≥ 1.3× prev5 {mean_prev_range:.2f})"))
 
-    # ── 7. Range Breakout ────────────────────────────────────────────────────
-    rc      = df.iloc[-9:-1]
-    rng_h   = float(rc["high"].max())
-    rng_l   = float(rc["low"].min())
-    rng_pct = (rng_h - rng_l) / rng_l * 100 if rng_l > 0 else 99.0
-    if (rng_pct < 2.0
-            and last["close"] > rng_h
-            and last["close"] > vwap
-            and br >= 0.4):
-        sl = _sl_from_atr(round(last["close"], 2), atr)
-        matches.append(_make_signal(symbol, SetupType.RANGE_BREAKOUT, "long",
-                            round(last["close"], 2), sl, atr, current, br, cp,
-                            f"Range breakout: {rng_pct:.2f}% tight range, broke {rng_h:.2f}"))
+    # RANGE_BREAKOUT detector removed (Phase 0.6) — n=1 in 280-trade DB,
+    # zero meaningful sample. Could be re-armed in Phase 1 conditionally on
+    # NR7 day-after expansion (66% historical follow-through).
 
-    # Tag confluence count on every match — the primary (matches[0]) is what
-    # the scorer entries on; confluence is a multiplier applied to its score.
+    # Confluence count tagging — now always 1 since only MOMENTUM_BREAKOUT
+    # fires. Kept for backward-compat with scoring/state code that reads it.
     n = len(matches)
     for m in matches:
         m["confluence_count"] = n

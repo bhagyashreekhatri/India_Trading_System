@@ -597,26 +597,21 @@ class TradingCrew:
         nchg    = regime_data.get("nifty_change_pct", 0.0)
         bs      = breadth_data.get("breadth_score", 0.6)
 
-        # Base threshold: use dashboard value if provided, else midday/default logic
-        # Fix #35 (A9) — if today_pnl is negative by lunch, raise midday gate to
-        # 8.5 (extra strict). Adapts risk to the morning's tape.
-        midday_gate = MIN_SCORE_ENTRY_CONSERVATIVE
-        if self._is_midday():
-            try:
-                today_pnl_now = self.state.get_today_pnl()
-                if today_pnl_now < 0:
-                    midday_gate = max(midday_gate, 8.3)   # Fix #37 — was 8.5
-                    print(f"[Scorer] Lunch dynamic — morning P&L ₹{today_pnl_now:+,.0f} negative, "
-                          f"midday gate raised to {midday_gate}")
-            except Exception:
-                pass
+        # ── Lunch-window dynamic gate DELETED (Phase 0.5 rebuild, 2026-05-11) ─
+        # 30-month NIFTY analysis showed:
+        #   12-13 IST hour: 53% WR, +0.099R avg, +₹112,677 P&L
+        #   13-14 IST hour: 58% WR (the "lunch gate" hour)
+        # Both lunch hours had above-average win rates. The premise that
+        # "lunch is dangerous" was empirically wrong. The gate was filtering
+        # profitable hours.
+        # On the negative-P&L morning question: the 30-month data shows
+        # sequential persistence is RANDOM (48-51%). Morning losses don't
+        # predict afternoon losses. Capital preservation is handled by the
+        # kill-switch (-2.5% capital), not by clock-based defensive raises.
+        # The conviction engine (macro + FHH) is the correct adaptive filter.
 
         if min_score is None:
-            min_score = midday_gate if self._is_midday() else MIN_SCORE_ENTRY
-        else:
-            # Midday: never go below the (possibly-raised) midday gate
-            if self._is_midday():
-                min_score = max(min_score, midday_gate)
+            min_score = MIN_SCORE_ENTRY
 
         # Also raise threshold if consecutive losses ≥ 3
         consec = self.state.get_consecutive_losses()
@@ -624,22 +619,23 @@ class TradingCrew:
             min_score = max(min_score, MIN_SCORE_ENTRY_CONSERVATIVE)
             print(f"[Scorer] Conservative mode — {consec} consecutive losses, threshold={min_score}")
 
-        # ── Time-of-day nudge (Fix #24 / A5) ─────────────────────────────────
-        # Adjust the gate by hour-of-day per the 151-trade analysis. 9 & 10 IST
-        # raise the bar (noisy / losing); 12 IST lowers it (best hour).
-        cur_hour = _now_ist().hour
-        hour_nudge = HOUR_GATE_NUDGES.get(cur_hour, 0.0)
-        if hour_nudge != 0.0:
-            min_score = max(0.0, min_score + hour_nudge)
-            print(f"[Scorer] Hour {cur_hour:02d} IST nudge {hour_nudge:+.1f} → threshold {min_score:.1f}")
-
-        # ── Winner-streak gate shift (Fix #33 / C3) ──────────────────────────
-        # After 3 wins in a row, raise the gate +0.3 to counter regression-to-mean.
-        # Mirror of consec-loss conservative shift on the upside.
-        consec_wins = self.state.get_consecutive_wins()
-        if consec_wins >= 3:
-            min_score += 0.3
-            print(f"[Scorer] Winner streak {consec_wins} — gate raised to {min_score:.1f}")
+        # ── HOUR_GATE_NUDGES DELETED (Phase 0.5 rebuild, 2026-05-11) ─────────
+        # 30-month NIFTY analysis (584 sessions) refuted the time-of-day-nudge
+        # premise. The hours nudged DOWN (12 IST) had average +0.099R but the
+        # hours nudged UP (9-10 IST) actually had 51-58% WR — not catastrophic.
+        # More importantly, hour-of-day is a CO-FEATURE that correlates with
+        # measurable structural state (NIFTY slope, breadth direction). The
+        # conviction engine reads that structural state directly via the 10:15
+        # IST macro filter. Clock-based nudges are now forbidden by the project
+        # Three Laws (see PROJECT_MEMORY.md).
+        #
+        # ── Winner-streak gate shift DELETED (Phase 0.5 rebuild) ─────────────
+        # Sequential daily persistence is 48-51% across 334 sessions (RANDOM).
+        # Yesterday's outcomes don't predict today's. "Regression-to-mean after
+        # 3 wins" is an intuition not supported by 30 months of data.
+        # Anti-revenge discipline IS kept via the loser-streak dampener and
+        # the asymmetric cooldown (45m after loss). Those work on capital
+        # preservation, not on regression theory.
 
         # Write effective threshold to status file so dashboard can display it
         conservative = consec >= MAX_CONSECUTIVE_LOSSES or self._is_midday()
@@ -781,23 +777,23 @@ class TradingCrew:
                     if s.get("direction", "long") == "long" and s["entry_price"] > pdh:
                         pdh_nudge = 0.3
 
-                # ── Sector flow nudge (Fix #15) ───────────────────────────────
-                # Trade WITH the day's flow. Top-3 sectors get a small boost,
-                # bottom-3 get a penalty (more likely to fall below the gate).
-                # Uses already-computed top_sectors / weak_sectors from breadth.
-                top_secs  = breadth_data.get("top_sectors", []) or []
-                weak_secs = breadth_data.get("weak_sectors", []) or []
+                # ── sector_nudge DELETED (Phase 0.5 rebuild) ──────────────────
+                # The 280-trade DB analysis showed top-3 sector membership did
+                # not correlate with trade success — REALTY/POWER/HEALTHCARE/
+                # PAINTS each had positive net P&L despite rarely being in any
+                # hardcoded "top-3" list. The hardcoded top-3 was overfit.
+                # The macro filter (conviction engine) plus continuous sector
+                # strength (Phase 1 work) replaces this naive boolean nudge.
                 sym_sector = s.get("sector", get_sector(sym))
                 sector_nudge = 0.0
-                if sym_sector in top_secs:
-                    sector_nudge = 0.3
-                elif sym_sector in weak_secs:
-                    sector_nudge = -0.5
-                # Fix #40 — breadth-bearish penalty (-0.7). Replaces the old
-                # tick-killing early return with a quality filter: only setups
-                # strong enough to clear the gate AFTER -0.7 (i.e., effectively
-                # A+/A++) actually fire on bearish-breadth days.
-                breadth_pen = -0.7 if getattr(self, "_breadth_bearish", False) else 0.0
+
+                # ── breadth_pen DELETED (Phase 0.5 rebuild) ───────────────────
+                # The 30-month analysis showed breadth alone is a coarse signal.
+                # The 10:15 IST macro filter (conviction engine) captures the
+                # actionable "is the market against my long bias" question with
+                # 72-98% precision. A separate -0.7 nudge on top of that is
+                # double-counting and produces over-filtering. Removed.
+                breadth_pen = 0.0
 
                 # ── D1 / Fix #41 — RAG read: historical WR nudge ─────────────
                 # Activates the learning loop. Query ChromaDB signal_patterns
