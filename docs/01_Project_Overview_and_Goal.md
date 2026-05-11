@@ -56,8 +56,8 @@ The floor rules. The agent cannot override these.
 5. Max concurrent positions: **5** (was 10, reducing to scalper-manageable size)
 6. Cooldown after loss: **45 minutes** (anti-revenge)
 7. Cooldown after win: **15 minutes** (let continuation fire)
-8. No new entries before 09:20 IST or after 13:30 IST
-9. Force square-off all positions by 15:00 IST
+8. No new entries before 09:20 IST or after 14:45 IST (Fix #60 — rolled back from 13:30 after Fix #59 fixed the EOD unwind bug)
+9. Force square-off all positions by 15:15 IST (Fix #59 — was 15:00; captures NSE last-30-min closing momentum, 5 min buffer before Zerodha auto-square at 15:20)
 10. RAG proven-loser veto: skip stocks with ≥10 trades AND WR <35% historically
 11. Spread filter: skip if bid-ask spread > 0.10%
 12. Tick-size rounding to ₹0.05 on every order

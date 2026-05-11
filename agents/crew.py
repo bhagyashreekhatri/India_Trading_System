@@ -1329,22 +1329,18 @@ class TradingCrew:
                     pass
 
             # ── EOD: close everything ──────────────────────────────────────────
+            # Fix #59 — single force-close at EOD_CLOSE_TIME (15:15 IST).
+            # Removed the bogus "partial unwind tied to NO_NEW_ENTRY_AFTER"
+            # block (Fix #34/B9 originally 14:45) which after Fix #47 was
+            # firing at 13:30 — closing positions 105 minutes before market
+            # close. NSE's last 30 min (15:00-15:30) has real momentum
+            # (institutional rebalancing, expiry hedging, closing prints).
+            # Let each position ride its own SL/TP/trail through the natural
+            # session; force-close everything at 15:15 (5 min before Zerodha
+            # MIS auto-square at 15:20).
             if now.time() >= eod:
                 self._full_exit(p, curr, "eod_exit")
                 continue
-
-            # ── EOD partial unwind (Fix #34 / B9) ─────────────────────────────
-            # After 14:45 (no-new-entry mark), close positions that still haven't
-            # hit TP1. They've had hours to develop; they won't run in the last
-            # 15 min. Frees capital and avoids the 15:00 dump on dead trades.
-            # TP1-hit positions keep running to 15:00 (already de-risked at BE).
-            try:
-                partial_t = _parse_time(NO_NEW_ENTRY_AFTER)   # 14:45
-                if now.time() >= partial_t and not p.tp1_hit:
-                    self._full_exit(p, curr, "eod_partial_unwind")
-                    continue
-            except Exception:
-                pass
 
             # ── SL hit (distinguish initial from trailed) ────────────────────
             if curr <= p.stop_loss:

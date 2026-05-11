@@ -224,13 +224,22 @@ PRIME_TIME_START        = "09:30"        # best time for momentum/reclaim
 PRIME_TIME_END          = "11:30"        # peak volume window
 MIDDAY_AVOID_START      = "13:00"        # lunch lull — be selective
 MIDDAY_AVOID_END        = "14:00"        # resume normal scanning
-NO_NEW_ENTRY_AFTER      = "13:30"        # Fix #47 — was 14:45; late entries can't
-                                         # reach TP1 before EOD partial-unwind window
-                                         # AND the 15:00 force-close. Every entry now
-                                         # gets ≥75 min runway before exit pressure.
+NO_NEW_ENTRY_AFTER      = "14:45"        # Fix #47 set this to 13:30 because the
+                                         # BUGGY partial-unwind block (Fix #34) was
+                                         # also firing at the same time, killing
+                                         # late entries with 15 min runway. Fix #59
+                                         # removed that bug. Fix #60: roll the entry
+                                         # cutoff back to 14:45 — captures the
+                                         # 13:30-14:45 window we were forfeiting,
+                                         # gives 30 min runway to 15:15 force-close.
 MARKET_OPEN             = "09:15"
 MARKET_CLOSE            = "15:30"
-EOD_CLOSE_TIME          = "15:00"        # close all positions by 3 PM
+EOD_CLOSE_TIME          = "15:15"        # Fix #59 — was 15:00, gave up the final 30 min
+                                         # of intraday closing momentum unnecessarily.
+                                         # NSE closing 30 min has institutional flows,
+                                         # expiry hedging, closing-print activity.
+                                         # 15:15 force-close gives us 5 min control buffer
+                                         # before Zerodha MIS auto-square at 15:20.
 
 # ─── Sector definitions ───────────────────────────────────────────────────────
 SECTOR_LEADERS = {
