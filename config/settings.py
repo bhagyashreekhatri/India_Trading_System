@@ -163,6 +163,16 @@ DAILY_LOSS_KILL_PCT     = 0.025          # 2.5% of CAPITAL → freeze new entrie
 DAILY_PROFIT_LOCKOUT_PCT = 0.030         # 3% (₹45k) → no new entries today; manage open
 DAILY_PROFIT_TIGHTEN_PCT = 0.020         # 2% (₹30k) → raise score gate to conservative (8.0)
 
+
+# ─── Phase 3.0.1 — Weekly / Monthly safety nets (Phase 3 live probe prep) ────
+# See docs/23_Phase3_Live_Probe_Operations_2026-05-12.md §5 + §11.
+# These are upper-bound circuit breakers that should NEVER fire in normal
+# operation. Their job is to pause the system before a chain of bad sessions
+# compounds. All thresholds are pct of CAPITAL, scale automatically.
+WEEKLY_LOSS_KILL_PCT      = 0.075        # 7.5% of CAPITAL → auto-pause until manual review
+CONSECUTIVE_LOSING_DAYS_PAUSE = 5        # 5 losing days in a row → auto-pause
+MONTHLY_NEG_R_REVIEW      = True         # on last trading day of month, EOD job flags if mean R<0
+
 # ─── Confluence multiplier (Fix #5) ──────────────────────────────────────────
 # When multiple setup detectors fire on the same stock at the same bar, the
 # Raw score is multiplied before the regime multiplier. This is PROJECT_MEMORY
@@ -415,3 +425,58 @@ SYMBOL_SECTOR_TO_INDEX = {
 #   MOMENTUM_BO_REQUIRE_PRIORITY, all news-sentiment constants.
 # Kept for now so crew.py keeps booting. Cleanup in Phase 0.5 / Phase 1.
 # ═══════════════════════════════════════════════════════════════════════════
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PHASE 3 PROBE-MODE OVERRIDES
+# ═══════════════════════════════════════════════════════════════════════════
+# See docs/23_Phase3_Live_Probe_Operations_2026-05-12.md
+#
+# When Phase 3 starts, BOTH of these conditions must hold:
+#   - PAPER_TRADING = False   (real orders)
+#   - PROBE_MODE_ENABLED = True (use scaled-down sizing below)
+#
+# Both flags default OFF. Flipping PAPER_TRADING without PROBE_MODE_ENABLED
+# would route real orders at the paper-sized (₹15L) risk per trade — that's
+# ₹1,500 risk per S/A trade vs the intended ₹500 for the ₹50k probe. To
+# prevent this footgun, crew.py's _allocate must consult PROBE_MODE_ENABLED
+# and apply the override table below when True.
+#
+# Set BOTH together via env-vars in deploy/.env when going live:
+#   PAPER_TRADING=False
+#   PROBE_MODE_ENABLED=True
+# Override flow: any setting with a probe-mode entry below takes precedence
+# when PROBE_MODE_ENABLED=True. Otherwise the original values apply.
+PROBE_MODE_ENABLED              = False
+PROBE_CAPITAL                   = 50_000
+PROBE_MAX_POSITIONS             = 3
+PROBE_CONVICTION_RISK_INR = {
+    "S": 500.0,    # 1.0% of probe capital
+    "A": 500.0,    # 1.0% of probe capital
+    "B": 250.0,    # 0.5% of probe capital (B already half-size)
+}
+PROBE_CONVICTION_TARGET_INR = {
+    "S": 1000.0,   # 2R target
+    "A":  833.0,   # 1.67R target
+    "B":  500.0,   # 2R on smaller risk
+}
+
+
+def get_active_capital() -> int:
+    """Return the capital amount the system should size positions against."""
+    return PROBE_CAPITAL if PROBE_MODE_ENABLED else CAPITAL
+
+
+def get_active_max_positions() -> int:
+    """Return the concurrent-position cap based on probe-mode state."""
+    return PROBE_MAX_POSITIONS if PROBE_MODE_ENABLED else MAX_POSITIONS
+
+
+def get_active_conviction_risk() -> dict:
+    """Return the conviction-engine risk-INR table based on probe-mode state."""
+    return PROBE_CONVICTION_RISK_INR if PROBE_MODE_ENABLED else CONVICTION_RISK_INR
+
+
+def get_active_conviction_target() -> dict:
+    """Return the conviction-engine target-INR table based on probe-mode state."""
+    return PROBE_CONVICTION_TARGET_INR if PROBE_MODE_ENABLED else CONVICTION_TARGET_INR
