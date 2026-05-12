@@ -82,6 +82,10 @@ class MarketStateAgent:
         self._prev_close_cache: dict[str, float] = {}     # iso date → close
         self._first_hour_close_cache: dict[str, float] = {}  # iso date → close
         self._last_snapshot: Optional[MarketStateSnapshot] = None
+        # Phase 2.0 telemetry — track the last state we logged so a state
+        # change (or the first non-WAITING call of the session) emits exactly
+        # one `[MarketState]` line. Keyed by ISO date so we re-log fresh each day.
+        self._logged_state_today: dict[str, str] = {}
 
     def get_state(self, now: Optional[datetime] = None) -> MarketStateSnapshot:
         """
@@ -168,6 +172,19 @@ class MarketStateAgent:
             reasoning=reason,
         )
         self._last_snapshot = snap
+
+        # Phase 2.0 telemetry — emit one `[MarketState]` line per state
+        # transition (or first non-WAITING call of the session).
+        prev_logged = self._logged_state_today.get(today_iso)
+        if prev_logged != state:
+            lock_marker = "LOCKED" if snap.is_locked_in else "PROVISIONAL"
+            print(
+                f"[MarketState] {lock_marker} {state}  "
+                f"NIFTY {dist_pct:+.2f}% (prev {prev_close:.2f} → "
+                f"10:15 {ltp:.2f})  {reason}"
+            )
+            self._logged_state_today[today_iso] = state
+
         return snap
 
     # ── Internals ────────────────────────────────────────────────────────────

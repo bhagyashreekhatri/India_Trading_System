@@ -112,6 +112,8 @@ class VolatilityStateAgent:
         self._yesterday_high_low: Optional[tuple[float, float]] = None
         self._last_state: Optional[VolatilityState] = None
         self._last_fetch_minute: Optional[int] = None
+        # Phase 2.0 telemetry — one log line per regime transition per day
+        self._logged_regime_today: dict[str, str] = {}
 
     def get_state(self, now=None) -> Optional[VolatilityState]:
         from datetime import datetime
@@ -152,6 +154,20 @@ class VolatilityStateAgent:
             state = compute_volatility_state(today_high, today_low, yh, yl, self._daily_ranges_pct)
             self._last_state = state
             self._last_fetch_minute = cur_min
+
+            # Phase 2.0 telemetry — one line per regime transition per day
+            prev = self._logged_regime_today.get(today_iso)
+            if prev != state.regime:
+                nr7_tag = "  NR7-day-after" if state.is_nr7 else ""
+                print(
+                    f"[Vol-State] {state.regime}{nr7_tag}  "
+                    f"today {state.today_range_so_far_pct:.2f}%  "
+                    f"yest {state.yesterday_range_pct:.2f}%  "
+                    f"5d-avg {state.rolling_5d_avg_pct:.2f}%  "
+                    f"size×{state.size_multiplier:.2f}  stop×{state.stop_multiplier:.2f}  "
+                    f"({state.reasoning})"
+                )
+                self._logged_regime_today[today_iso] = state.regime
             return state
         except Exception as e:
             print(f"[VolatilityState] error: {e}")

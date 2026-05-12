@@ -153,6 +153,12 @@ class FhhBreakDetector:
             state.fh_low  = float(first_hour_bars["low"].min())
             state.fh_close = float(first_hour_bars.iloc[-1]["close"])
             state.is_set = True
+            # Phase 2.0 telemetry — emit exactly once when first-hour resolves
+            print(
+                f"[FHH] {symbol} captured  "
+                f"FHH={state.fh_high:.2f}  FHL={state.fh_low:.2f}  "
+                f"FH-close={state.fh_close:.2f}  range={state.fh_high - state.fh_low:.2f}"
+            )
         except Exception as e:
             print(f"[FhhDetector] _capture_first_hour error for {symbol}: {e}")
 
@@ -183,10 +189,23 @@ class FhhBreakDetector:
                     state.high_break_time_ist = (
                         bar["date"].isoformat() if hasattr(bar["date"], "isoformat") else str(bar["date"])
                     )
+                    # Phase 2.0 — log once per symbol per session
+                    flavor = "WHIPSAW" if state.low_broken else "CLEAN-HIGH-BREAK"
+                    print(
+                        f"[FHH] {symbol} {flavor}  "
+                        f"high {float(bar['high']):.2f} > FHH {state.fh_high:.2f}  "
+                        f"at {state.high_break_time_ist}"
+                    )
                 if not state.low_broken and float(bar["low"]) < state.fh_low:
                     state.low_broken = True
                     state.low_break_time_ist = (
                         bar["date"].isoformat() if hasattr(bar["date"], "isoformat") else str(bar["date"])
+                    )
+                    flavor = "WHIPSAW" if state.high_broken else "CLEAN-LOW-BREAK"
+                    print(
+                        f"[FHH] {symbol} {flavor}  "
+                        f"low {float(bar['low']):.2f} < FHL {state.fh_low:.2f}  "
+                        f"at {state.low_break_time_ist}"
                     )
                 if state.high_broken and state.low_broken:
                     break

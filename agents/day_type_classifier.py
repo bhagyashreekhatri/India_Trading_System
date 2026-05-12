@@ -154,6 +154,9 @@ class DayTypeClassifier:
         self.kite = kite
         self._cache_by_date: dict[str, DayTypeSnapshot] = {}
         self._last_fetch_minute: Optional[int] = None
+        # Phase 2.0 — track last-logged day-type per date so we emit one
+        # `[Day-Type]` line per state transition.
+        self._logged_type_today: dict[str, str] = {}
 
     def get_snapshot(self, now=None) -> DayTypeSnapshot:
         from datetime import datetime
@@ -189,6 +192,18 @@ class DayTypeClassifier:
             snap = classify_day_type(candles, now)
             self._cache_by_date[cache_key] = snap
             self._last_fetch_minute = cur_min
+
+            # Phase 2.0 telemetry — log one line per state transition
+            prev = self._logged_type_today.get(cache_key)
+            if prev != snap.type and snap.type != "WAITING":
+                print(
+                    f"[Day-Type] {snap.type}  "
+                    f"range={snap.nifty_range_pct:.2f}%  "
+                    f"OC={snap.nifty_oc_pct:+.2f}%  "
+                    f"close-pos={snap.close_position_in_range:.0%}  "
+                    f"({snap.bars_seen} bars) — {snap.reasoning}"
+                )
+                self._logged_type_today[cache_key] = snap.type
             return snap
         except Exception as e:
             print(f"[DayTypeClassifier] error: {e}")

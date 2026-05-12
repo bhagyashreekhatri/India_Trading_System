@@ -237,6 +237,7 @@ class TradingCrew:
         self._tick += 1
         self._vwap_cache.clear()   # Fix #8 — fresh VWAPs per tick
         self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
+        self._entries_this_tick = 0  # Phase 2.0 B6 — count actual entries, not scorer passes
         now = _now_ist()
         print(f"\n{'='*60}")
         print(f"[Crew] TICK #{self._tick} — {now.strftime('%H:%M:%S IST')}")
@@ -245,32 +246,50 @@ class TradingCrew:
         # 1. Always manage open positions first (SL/TP/trailing/EOD)
         self._manage_positions()
 
+        # Phase 2.0 B5 — drive new-agent telemetry at every tick. These calls
+        # are internally cached (Kite call only when the cache is stale), so
+        # cost is near-zero, but the [MarketState], [Day-Type], [Vol-State],
+        # [FHH NIFTY 50] log lines fire reliably. Without this poke they would
+        # only emit when the conviction engine evaluates a setup — which on a
+        # STRONG_RED day might be zero or one event.
+        try:
+            self.market_state.get_state(now)
+            self.day_type.get_snapshot(now)
+            self.vol_state.get_state(now)
+            self.fhh_detector.get_state("NIFTY 50", now)
+        except Exception as e:
+            print(f"[Crew] phase-1 telemetry poke failed (non-fatal): {e}")
+
         # 2. Time gate — no new entries in certain windows
         if not self._ok_to_trade(now):
             print(f"[Crew] Time gate: no new entries at {now.strftime('%H:%M')}")
             return self._tick_summary(0, 0, 0)
 
-        # 3. Regime + breadth (cached, refresh every 5 ticks ~15 min)
-        if self._tick - self._regime_tick >= 5:
-            self._regime_cache = self._detect_regime()
-            self._regime_tick  = self._tick
-
-        if self._tick - self._breadth_tick >= 5:
-            self._breadth_cache = self._detect_breadth()
-            self._breadth_tick  = self._tick
+        # 3. Regime + breadth — refresh every tick (Phase 2.0 B10). The old
+        # 5-tick cadence (~15 min) meant the macro reading went stale on
+        # adversarial days like 2026-05-12 where NIFTY drifted -30 bps after
+        # the last refresh and the agent never re-locked. Both _detect_regime
+        # and _detect_breadth are internally cheap (one Kite call each) and
+        # the breadth detector reuses the per-tick VWAP cache.
+        self._regime_cache  = self._detect_regime()
+        self._regime_tick   = self._tick
+        self._breadth_cache = self._detect_breadth()
+        self._breadth_tick  = self._tick
 
         breadth_score = self._breadth_cache.get("breadth_score", 0.6)
         breadth_label = self._breadth_cache.get("breadth_label", "NEUTRAL")
 
-        # Fix #40 — breadth-bearish should NOT kill the tick (was an early
-        # return → 0 setups even on days like Nifty -0.07% with strong
-        # individual movers). Now: continue scanning + scoring; bearish breadth
-        # adds a -0.7 score penalty in _score_signals so only A+/A++ trades
-        # fire. Real scalpers don't shut down on a slightly-red day; they get
-        # picky about which stocks they trade.
+        # Fix #40 — breadth-bearish DOES NOT kill the tick. The old -0.7 score
+        # penalty was zeroed in Phase 0.5 because the 30-month audit showed
+        # breadth-as-score-input was anti-predictive. We keep the flag for
+        # downstream code that may still check it, but do NOT emit the
+        # "score penalty -0.7 will apply" line (it was misleading — no penalty
+        # actually applies in the post-Phase-0.5 path). Conviction engine
+        # gates entries on macro state, not breadth.
         self._breadth_bearish = breadth_score <= BREADTH_BEARISH
         if self._breadth_bearish:
-            print(f"[Crew] Breadth BEARISH ({breadth_score:.0%}) — score penalty -0.7 will apply, only A+/A++ fire")
+            print(f"[Crew] Breadth {breadth_label} ({breadth_score:.0%}) — "
+                  f"informational only; conviction engine gates on macro state")
 
         # 4. Scan active stocks
         active = self._scan_market()
@@ -1345,6 +1364,11 @@ class TradingCrew:
             print(f"[Allocator] ✅ ENTERED {sym} qty={qty} grade={s['grade']} "
                   f"score={s['final_score']:.1f} entry={s['entry_price']}")
 
+            # Phase 2.0 B6 — count actual entries (post-conviction, post-allocator).
+            # The tick summary's "N entries" now reflects real position opens,
+            # not just scorer passes.
+            self._entries_this_tick += 1
+
             # Refresh open_pos after each entry
             open_pos = self.state.get_open_positions()
 
@@ -1792,12 +1816,18 @@ class TradingCrew:
             except Exception:
                 pass
 
+        # Phase 2.0 B6 — `entries` now reflects ACTUAL position opens (post-
+        # conviction, post-allocator), not the scorer-pass count which was
+        # misleading on the 2026-05-12 GODREJCP case (1 scorer pass → 0 entry).
+        entered = getattr(self, "_entries_this_tick", 0)
+
         s = {
             "tick":           self._tick,
             "time":           now.strftime("%H:%M:%S"),
             "active_stocks":  active,
             "setups_found":   setups,
             "signals_scored": scored,
+            "entries":        entered,
             "open_positions": len(open_pos),
             "today_pnl":      round(self.state.get_today_pnl(), 2),
             "best_open_sym":  best_sym,
@@ -1806,7 +1836,7 @@ class TradingCrew:
 
         best_str = f" | best open: {best_sym} ₹{best_unreal:+,.0f}" if best_sym else ""
         print(f"[Crew] Tick #{self._tick} done: {setups} setups | "
-              f"{scored} entries | "
+              f"{scored} scored | {entered} entered | "
               f"{s['open_positions']} open | "
               f"P&L ₹{s['today_pnl']:+,.0f}{best_str}")
 
