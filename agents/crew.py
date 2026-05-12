@@ -1436,6 +1436,58 @@ class TradingCrew:
             if p.tp1_hit and TRAILING_SL_ENABLED:
                 self._try_trail_sl(p, curr)
 
+            # ── Pre-TP1 trail SL (Phase 1.2 — Fix #71) ──────────────────────
+            # Once a trade has been favorable by +0.5R AND has held that
+            # level for ≥10 minutes, tighten the SL to entry (breakeven).
+            # This protects the "MAXHEALTH-class" trades that go +₹421 then
+            # reverse to -₹515 because the SL was never moved.
+            #
+            # Lazy state: track first-time-crossed-threshold per position in
+            # self._pre_tp1_threshold_first_seen (dict, position_id → datetime).
+            if not p.tp1_hit and p.entry_time:
+                try:
+                    from config.settings import (
+                        PRE_TP1_TRAIL_ENABLED,
+                        PRE_TP1_TRAIL_TRIGGER_R,
+                        PRE_TP1_TRAIL_HOLD_MIN,
+                    )
+                    if PRE_TP1_TRAIL_ENABLED:
+                        if not hasattr(self, "_pre_tp1_first_seen"):
+                            self._pre_tp1_first_seen = {}
+                        sl_dist  = abs(p.entry_price - p.initial_sl) or 0.01
+                        pnl_r    = ((curr - p.entry_price) / sl_dist
+                                    if p.direction == "long"
+                                    else (p.entry_price - curr) / sl_dist)
+                        already_at_be = abs(p.stop_loss - p.entry_price) < 0.05
+                        if pnl_r >= PRE_TP1_TRAIL_TRIGGER_R and not already_at_be:
+                            if p.id not in self._pre_tp1_first_seen:
+                                self._pre_tp1_first_seen[p.id] = now
+                            held_min = (now - self._pre_tp1_first_seen[p.id]).total_seconds() / 60
+                            if held_min >= PRE_TP1_TRAIL_HOLD_MIN:
+                                # Tighten SL to entry. Use existing trail
+                                # infrastructure if available; fall back to
+                                # direct state update.
+                                new_sl = round(p.entry_price, 2)
+                                if new_sl > p.stop_loss:
+                                    print(f"[PreTP1Trail] {p.symbol} held +{PRE_TP1_TRAIL_TRIGGER_R}R "
+                                          f"for {held_min:.0f}min → SL {p.stop_loss:.2f} → "
+                                          f"{new_sl:.2f} (breakeven)")
+                                    self.state.update_stop_loss(p.id, new_sl)
+                                    p.stop_loss = new_sl
+                                    # Best-effort SL-M order replacement (live mode)
+                                    try:
+                                        if not PAPER_TRADING and getattr(p, "sl_order_id", None):
+                                            self.kite.modify_order(p.sl_order_id, trigger_price=new_sl)
+                                    except Exception:
+                                        pass
+                        elif pnl_r < PRE_TP1_TRAIL_TRIGGER_R and p.id in self._pre_tp1_first_seen:
+                            # Dropped below the trigger before we got 10 min hold
+                            # — reset the timer so subsequent re-cross requires
+                            # another 10 min of stable favorable territory.
+                            del self._pre_tp1_first_seen[p.id]
+                except Exception as _e:
+                    pass
+
             # ── Stall detection — tiered (Fix #32 / B5) ──────────────────────
             # Tier 1 (early): 25 min + pnl_r ∈ [-0.5, +0.3] → exit (no momentum
             #   either way — capital better used elsewhere).

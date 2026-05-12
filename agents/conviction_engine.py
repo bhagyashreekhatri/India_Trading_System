@@ -85,12 +85,18 @@ class ConvictionEngine:
         """
         Returns a ConvictionResult. Universal filters fire FIRST (cheapest skips),
         then macro state, then FHH state, then tier mapping.
+
+        Phase 1.1 enhancement (2026-05-11): Added stock-level FHH break check
+        and HOD proximity gate. The NIFTY-level FHH state still acts as macro
+        confirmation; the stock's OWN FHH break is the entry trigger; HOD
+        proximity ensures we're not chasing extended moves.
         """
         from config.settings import (
             ORDER_BOOK_RATIO_MIN,
             SPREAD_MAX_PCT,
             CONVICTION_RISK_INR,
             CONVICTION_TARGET_INR,
+            STOCK_HOD_PROXIMITY_PCT,
         )
 
         failed = []
@@ -103,6 +109,21 @@ class ConvictionEngine:
                 macro_state="-", fhh_state="-",
                 failed=["stock_change_pct<0"],
             )
+
+        # 1b. Stock must be near today's high — don't chase extended moves.
+        # Validated 30-month finding: structural entry should be at or near
+        # the fresh HOD. If LTP is >0.5% below the day high, the move has
+        # already happened.
+        ltp_pre = stock_quote.get("last_price", 0.0)
+        day_high = stock_quote.get("high", 0.0)
+        if ltp_pre > 0 and day_high > 0:
+            below_hod_pct = (day_high - ltp_pre) / day_high
+            if below_hod_pct > STOCK_HOD_PROXIMITY_PCT:
+                return _skip(
+                    f"stock_extended_off_hod_{below_hod_pct*100:.2f}%",
+                    macro_state="-", fhh_state="-",
+                    failed=[f"LTP {below_hod_pct*100:.2f}% below day high (max {STOCK_HOD_PROXIMITY_PCT*100:.1f}%)"],
+                )
 
         # 2. Spread filter
         bid = stock_quote.get("bid", 0.0)
@@ -151,7 +172,10 @@ class ConvictionEngine:
                 failed=["macro RED — 74% of these days close negative"],
             )
 
-        # ── First-Hour break state ──────────────────────────────────────────
+        # ── First-Hour break state (NIFTY level — macro signal) ─────────────
+        from config.settings import (
+            REQUIRE_STOCK_FHH_BREAK, WHIPSAW_FREEZE_ENABLED,
+        )
         fhh_state = self.fhh_detector.get_state(self.NIFTY_FOR_FHH, now)
 
         if not fhh_state.is_set:
@@ -161,19 +185,49 @@ class ConvictionEngine:
                 failed=["first hour not yet captured"],
             )
 
-        if fhh_state.whipsaw:
+        # ── Whipsaw freeze (Phase 1.3) ──────────────────────────────────────
+        # 30-month evidence: NIFTY whipsaw (both FHH and FHL broken) →
+        # 70% of those days close flat. Freeze all entries when detected.
+        if WHIPSAW_FREEZE_ENABLED and fhh_state.whipsaw:
             return _skip(
-                "whipsaw_chop",
+                "whipsaw_freeze_nifty",
                 macro_state=macro_snap.state, fhh_state="whipsaw",
-                failed=["both FHH and FHL broken — 70% historical chop"],
+                failed=["NIFTY whipsaw (both FHH+FHL broken) — 70% historical chop"],
             )
 
+        # NIFTY FHH break = market-wide bullish confirmation
         if not fhh_state.clean_high_break:
             return _skip(
-                "fhh_not_broken",
+                "nifty_fhh_not_broken",
                 macro_state=macro_snap.state, fhh_state="inside_or_below",
-                failed=["clean FHH break not yet detected"],
+                failed=["NIFTY FHH not yet broken — no macro continuation signal"],
             )
+
+        # ── Stock-level FHH break (Phase 1.1 — the entry trigger) ───────────
+        # The 30-month research validated NIFTY's FHH break as the macro
+        # signal. For an individual STOCK entry, we additionally require the
+        # stock's OWN first-hour-high to be broken. This is the "stock is
+        # structurally breaking out, AND macro confirms it" combo.
+        if REQUIRE_STOCK_FHH_BREAK:
+            stock_fhh = self.fhh_detector.get_state(symbol, now)
+            if not stock_fhh.is_set:
+                return _skip(
+                    f"stock_fhh_not_set_{symbol}",
+                    macro_state=macro_snap.state, fhh_state="nifty_ok_stock_pending",
+                    failed=[f"{symbol} first hour not yet captured"],
+                )
+            if stock_fhh.whipsaw:
+                return _skip(
+                    f"stock_whipsaw_{symbol}",
+                    macro_state=macro_snap.state, fhh_state="nifty_ok_stock_whipsaw",
+                    failed=[f"{symbol} both FHH+FHL broken — stock-level chop"],
+                )
+            if not stock_fhh.clean_high_break:
+                return _skip(
+                    f"stock_fhh_not_broken_{symbol}",
+                    macro_state=macro_snap.state, fhh_state="nifty_ok_stock_inside",
+                    failed=[f"{symbol} FHH not yet broken"],
+                )
 
         # ── Tier mapping ────────────────────────────────────────────────────
         # All gates passed. Map (macro_state, fhh_state) to tier.
@@ -184,9 +238,9 @@ class ConvictionEngine:
                 size_multiplier=1.0,
                 risk_inr=CONVICTION_RISK_INR["S"],
                 target_inr=CONVICTION_TARGET_INR["S"],
-                reasoning=f"TIER_S — {macro_snap.reasoning} + FHH break (30-month historical: 100% close positive, n=44)",
+                reasoning=f"TIER_S — STRONG_GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD (30-month: 100% NIFTY close positive, n=44)",
                 macro_state="STRONG_GREEN",
-                fhh_state="clean_high_break",
+                fhh_state="triple_confluence_break",
                 failed_filters=[],
             )
 
@@ -196,9 +250,9 @@ class ConvictionEngine:
                 size_multiplier=1.0,
                 risk_inr=CONVICTION_RISK_INR["A"],
                 target_inr=CONVICTION_TARGET_INR["A"],
-                reasoning=f"TIER_A — {macro_snap.reasoning} + FHH break (30-month: 97% close positive, n=38)",
+                reasoning=f"TIER_A — GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD (30-month: 97% NIFTY close positive, n=38)",
                 macro_state="GREEN",
-                fhh_state="clean_high_break",
+                fhh_state="triple_confluence_break",
                 failed_filters=[],
             )
 

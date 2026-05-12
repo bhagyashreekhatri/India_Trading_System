@@ -292,6 +292,40 @@ ORDER_BOOK_RATIO_MIN           = 1.5
 SPREAD_MAX_PCT                 = 0.0010   # 0.10%
 
 
+# ── Stock-level HOD proximity (Phase 1.1) ────────────────────────────────────
+# A stock trading > 0.5% below today's high is structurally extended off the
+# top — chasing risk. Validated by the 30-month research: entries should fire
+# at fresh HOD prints, not after the move has already happened. Max distance
+# from HOD for a valid entry candidate.
+STOCK_HOD_PROXIMITY_PCT        = 0.005    # 0.5% — must be near fresh HOD
+
+
+# ── Per-stock FHH break requirement (Phase 1.1) ──────────────────────────────
+# When True, the conviction engine requires the SYMBOL's own first-hour-high
+# to be cleanly broken (not just NIFTY's). This is the validated 30-month
+# entry trigger: NIFTY macro context + individual stock breaking its own
+# structural level. Set False to fall back to NIFTY-only FHH (Phase 0).
+REQUIRE_STOCK_FHH_BREAK        = True
+
+
+# ── Pre-TP1 trail SL (Phase 1.2) ──────────────────────────────────────────
+# When a trade is favorable by +0.5R AND has held that level for ≥10 minutes,
+# tighten SL to entry (breakeven). This is the "lock in conviction" move that
+# protected the MAXHEALTH-class trades that went +₹421 then reversed to -₹515
+# in the original observation set. Fixes the worst-loss mode where a trade
+# was profitable mid-flight but the SL was never moved.
+PRE_TP1_TRAIL_ENABLED          = True
+PRE_TP1_TRAIL_TRIGGER_R        = 0.5      # tighten when pnl_r ≥ +0.5
+PRE_TP1_TRAIL_HOLD_MIN         = 10       # need to hold +0.5R for 10 min before tightening
+
+
+# ── Whipsaw freeze (Phase 1.3) ────────────────────────────────────────────
+# Validated 30-month finding: when NIFTY breaks BOTH its first-hour high AND
+# its first-hour low (whipsaw signature), 70% of those days close flat ±0.5%.
+# Block all new entries when this signature is detected on the index.
+WHIPSAW_FREEZE_ENABLED         = True
+
+
 # ── Conviction-engine sizing (replaces SCORE_SIZE_TIERS) ────────────────────
 # Risk and target in ₹ per trade. Mapped to position size via stop distance.
 # Tier S = STRONG_GREEN + FHH (100% historical accuracy, n=44)
