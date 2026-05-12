@@ -25,6 +25,7 @@ The single-source-of-truth fix log lives at `../PROJECT_MEMORY.md`. The docs in 
 | 9 | [`19_Discovery_Engine_Spec_2026-05-12.md`](19_Discovery_Engine_Spec_2026-05-12.md) | Phase 2.1 — Top-mover scanner for invisible mid-caps (JINDRILL evidence) | Spec for next ship |
 | 10 | [`20_Sector_Aware_Macro_Spec_2026-05-12.md`](20_Sector_Aware_Macro_Spec_2026-05-12.md) | Phase 2.2 — Sector decoupling relief on STRONG_RED days (ONGC blocked-but-clean evidence) | Spec for next ship |
 | 11 | [`21_Stock_Decoupling_Spec_2026-05-12.md`](21_Stock_Decoupling_Spec_2026-05-12.md) | Phase 2.3 — Per-stock decoupling rule. Catches ONGC-class single-stock catalysts on macro-RED days. Replaces doc 20 after METAL sector head-fake evidence. | **Implemented + shadow** |
+| 12 | [`22_Runway_Check_Spec_2026-05-12.md`](22_Runway_Check_Spec_2026-05-12.md) | Phase 2.6 — Setup-aware time-to-target runway check. Replaces the blunt `NO_NEW_ENTRY_AFTER` clock rule with empirical `median_TTP1 × safety_factor ≤ remaining_minutes`. Final removal of clock categories from entry path. | **Spec only — pending impl** |
 
 ## Reference docs (older context)
 
@@ -76,6 +77,8 @@ Numbers (01, 04, 05x2, 07-18) reflect chronological order of analyses, not logic
 | Phase 2.1 — Discovery Engine (top-mover scanner) | doc 19 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
 | Phase 2.2 — Sector-aware macro filter | doc 20 | ⛔ REJECTED — METAL fade head-fake evidence on 2026-05-12 |
 | Phase 2.3 — Stock-level decoupling rule | doc 21 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
+| Phase 2.5 — Hygiene cleanup ([LegacyRegime] tag, midday-lull log removed) | — | 🚀 READY to deploy |
+| Phase 2.6 — Runway check (replaces NO_NEW_ENTRY_AFTER clock rule) | doc 22 | 📝 SPEC drafted (2026-05-12), implementation pending |
 | Phase 2 — Forward validation (5-15 sessions) | doc 17 | ⏳ STARTS TOMORROW |
 | Phase 3 — ₹50k live probe | doc 17 | ⏳ Week 2-3 |
 | Phase 4 — ₹3L deployment | doc 17 | ⏳ Month 2 |
