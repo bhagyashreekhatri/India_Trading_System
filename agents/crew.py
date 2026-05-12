@@ -399,9 +399,14 @@ class TradingCrew:
             return False
         if t >= no_entry:
             return False
-        if mid_start <= t < mid_end:
-            print(f"[Crew] Midday lull ({MIDDAY_AVOID_START}–{MIDDAY_AVOID_END}) — selective only")
-            # Still allow, but min_score is raised in _score_signals
+        # Phase 2.5 hygiene — the legacy midday-lull log was firing every tick
+        # 13:00-14:00 IST and cluttering journalctl with no actionable info.
+        # The midday `conservative` flag (line ~702) is consulted only by the
+        # legacy `_score_signals` path, NOT by the conviction engine which is
+        # the production decision authority. So the gate is effectively a
+        # no-op for new entries anyway; the log message was pure noise.
+        # Underlying `_is_midday()` retained for legacy callers; just the
+        # per-tick print removed.
         return True
 
     def _is_midday(self) -> bool:
@@ -456,7 +461,16 @@ class TradingCrew:
     # ── Agent 2: Regime Detector ─────────────────────────────────────────────
 
     def _detect_regime(self) -> dict:
-        print("[Regime] Detecting market regime...")
+        # Phase 2.5 hygiene — the LegacyRegime labels (RECOVERING/EVENT/
+        # TRENDING/CHOPPY) don't match the new 5-state macro filter
+        # (STRONG_GREEN/GREEN/YELLOW/RED/STRONG_RED). The [MarketState] log
+        # emitted by market_state.py is the authoritative reading. This regime
+        # calculation is kept because:
+        #   1. trade_state.regime column (Fix #14) persists this label on every
+        #      entry for RAG retrieval / EOD critique correlation
+        #   2. legacy `_score_signals` consults it (now zeroed by Phase 0.5)
+        # So we keep the math but tag the log clearly so it's not confused
+        # with the conviction-engine macro state.
         try:
             nifty      = self.kite.get_nifty_data()
             banknifty  = self.kite.get_banknifty_data()
@@ -464,7 +478,7 @@ class TradingCrew:
             n_above    = nifty.get("above_vwap", True)
             bn_above   = banknifty.get("above_vwap", True)
 
-            # Regime logic
+            # Regime logic (informational/storage only — does NOT gate entries)
             if abs(n_chg) > 1.5:
                 regime = "event"
             elif n_above and abs(n_chg) > 0.4:
@@ -474,7 +488,6 @@ class TradingCrew:
             else:
                 regime = "choppy"
 
-            # Regime confidence
             confidence = 0.9 if abs(n_chg) > 0.8 else 0.7
 
             result = {
@@ -487,10 +500,13 @@ class TradingCrew:
                 "nifty_change_pct":     n_chg,
                 "banknifty_change_pct": banknifty.get("change_pct", 0),
             }
-            print(f"[Regime] {regime.upper()} | Nifty {n_chg:+.2f}% | above_vwap={n_above}")
+            # One-line debug print — tagged [LegacyRegime] to distinguish
+            # from [MarketState] which is the production decision authority.
+            print(f"[LegacyRegime] {regime.upper()} | Nifty {n_chg:+.2f}% | "
+                  f"above_vwap={n_above}  (informational; [MarketState] gates entries)")
             return result
         except Exception as e:
-            print(f"[Regime] Error: {e} — defaulting to CHOPPY")
+            print(f"[LegacyRegime] error: {e} — defaulting to CHOPPY (informational)")
             return {
                 "regime": "choppy", "regime_confidence": 0.5,
                 "nifty_above_vwap": True, "banknifty_above_vwap": True,
