@@ -173,6 +173,42 @@ WEEKLY_LOSS_KILL_PCT      = 0.075        # 7.5% of CAPITAL → auto-pause until 
 CONSECUTIVE_LOSING_DAYS_PAUSE = 5        # 5 losing days in a row → auto-pause
 MONTHLY_NEG_R_REVIEW      = True         # on last trading day of month, EOD job flags if mean R<0
 
+
+# ─── Phase 2.6 — Runway check (replaces NO_NEW_ENTRY_AFTER clock rule) ───────
+# See docs/22_Runway_Check_Spec_2026-05-12.md and agents/runway_check.py.
+#
+# Replaces the blunt `NO_NEW_ENTRY_AFTER = 14:45` clock cutoff with an
+# empirical setup-aware rule: median_TTP1 × safety_factor ≤ remaining_minutes.
+# Default OFF; LOG_SHADOW=True emits would-skip/would-admit lines for
+# observation without blocking.
+RUNWAY_CHECK_ENABLED       = False       # SHADOW MODE — logs only
+RUNWAY_CHECK_LOG_SHADOW    = True        # emit [Runway] log lines anyway
+RUNWAY_SAFETY_FACTOR       = 1.5         # buffer over median TTP1
+RUNWAY_LOOKBACK_TRADES     = 50          # median window per setup
+RUNWAY_MIN_REMAINING_MIN   = 20          # absolute floor — never enter < 20m before EOD
+RUNWAY_DEFAULT_TTP1_MIN    = 45          # fallback when no historical data for this setup
+
+# Setup-specific bootstrap values (used when fewer than 5 historical wins
+# exist for the setup). Once data accumulates, the live median takes over
+# and these are ignored. Empirically reasonable starting points:
+RUNWAY_SETUP_DEFAULTS = {
+    "momentum_breakout":   30,   # typical post-FHH-break momentum trades
+    "fhh_break":           35,
+    "vwap_pullback":       40,
+    "vwap_reclaim":        40,
+    "failed_breakdown":    20,
+    "range_breakout":      25,
+    "trend_pullback":      45,
+    "inside_bar_break":    30,
+}
+
+# Convenience alias — the runway check references the EOD partial-unwind
+# moment, which in this codebase is the same as NO_NEW_ENTRY_AFTER (Fix #34
+# uses this time as the partial-unwind trigger). We hardcode the value here
+# (not a forward reference to NO_NEW_ENTRY_AFTER which is defined later in
+# the file) so the constant is importable in any order. Keep both in sync.
+EOD_PARTIAL_UNWIND_TIME    = "14:45"
+
 # ─── Confluence multiplier (Fix #5) ──────────────────────────────────────────
 # When multiple setup detectors fire on the same stock at the same bar, the
 # Raw score is multiplied before the regime multiplier. This is PROJECT_MEMORY

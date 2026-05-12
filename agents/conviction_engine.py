@@ -73,10 +73,11 @@ class ConvictionEngine:
     def __init__(self, market_state_agent, fhh_detector):
         self.market_state = market_state_agent
         self.fhh_detector = fhh_detector
-        # Phase 1.5/1.6/1.7 — injected by crew.py after construction.
+        # Phase 1.5/1.6/1.7/2.6 — injected by crew.py after construction.
         # Default None so tests using just market+fhh keep working.
         self.day_type = None
         self.vol_state = None
+        self.state_mgr = None    # Phase 2.6 — for runway check median-TTP1 query
 
     def evaluate(
         self,
@@ -319,6 +320,44 @@ class ConvictionEngine:
                 # is fine — the conviction tier handles caution sizing).
             except Exception as e:
                 print(f"[Conviction] day_type read error (proceeding): {e}")
+
+        # ── Runway check (Phase 2.6 — replaces NO_NEW_ENTRY_AFTER clock) ────
+        # Skip the candidate if its setup's historical median time-to-TP1 times
+        # the safety factor exceeds the remaining session runway. When the rule
+        # is in SHADOW mode (default), it still evaluates and logs but does not
+        # block. See docs/22_Runway_Check_Spec_2026-05-12.md.
+        if self.state_mgr is not None:
+            try:
+                from agents.runway_check import evaluate_runway
+                import config.settings as _settings_mod
+                setup_type_str = getattr(setup, "setup_type", "")
+                # SetupType enum → str
+                if hasattr(setup_type_str, "value"):
+                    setup_type_str = setup_type_str.value
+                rc = evaluate_runway(
+                    setup_type=str(setup_type_str),
+                    state_mgr=self.state_mgr,
+                    settings_module=_settings_mod,
+                    now=now,
+                )
+                if not rc.ok:
+                    if getattr(_settings_mod, "RUNWAY_CHECK_ENABLED", False):
+                        # Live mode — actually skip
+                        print(f"[Runway] {symbol} SKIP — {rc.reason}")
+                        return _skip(
+                            f"runway_too_short ({rc.reason})",
+                            macro_state=macro_snap.state, fhh_state="ok_but_no_runway",
+                            failed=[rc.reason],
+                        )
+                    elif getattr(_settings_mod, "RUNWAY_CHECK_LOG_SHADOW", False):
+                        # Shadow mode — log only
+                        print(
+                            f"[Runway] {symbol} ADMIT-SHADOW (would-skip) — "
+                            f"{rc.reason}"
+                        )
+                # rc.ok=True path — no log unless verbose; keep journalctl quiet
+            except Exception as e:
+                print(f"[Conviction] runway check error (proceeding): {e}")
 
         # ── Volatility state read (Phase 1.7 — adaptive size mult) ─────────
         # The size multiplier is applied DOWNSTREAM in crew.py when computing

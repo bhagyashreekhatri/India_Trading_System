@@ -347,6 +347,158 @@ class TradeStateManager:
                 (f"{today}%",)).fetchone()[0]
         return float(result)
 
+    # ── Phase 2.6 — median time-to-TP1 lookup ────────────────────────────────
+
+    def get_median_ttp1_minutes(self, setup_type: str, lookback: int = 50) -> tuple:
+        """
+        Median elapsed minutes from entry to exit across the last `lookback`
+        winning trades of `setup_type`. Used by agents/runway_check.py to
+        decide whether a candidate has enough remaining session-runway to
+        reach TP1.
+
+        Why "exit_time - entry_time" not "tp1_hit_time": the schema doesn't
+        store a per-leg TP1 timestamp. For TP1+TP2 trades the exit_time
+        reflects the final close (after TP2 or trailing SL on the second
+        half). This OVERSTATES the true TTP1 by some amount — making the
+        runway check more conservative than strictly necessary, which is
+        the right side to err on.
+
+        Returns:
+            (median_minutes, sample_size)
+            median_minutes is None if sample_size < 5 (caller falls back
+            to the bootstrap default).
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT entry_time, exit_time
+                FROM positions
+                WHERE setup_type = ?
+                  AND status = 'closed_win'
+                  AND entry_time IS NOT NULL
+                  AND exit_time IS NOT NULL
+                ORDER BY exit_time DESC
+                LIMIT ?
+                """,
+                (setup_type, int(lookback)),
+            ).fetchall()
+
+        if not rows or len(rows) < 5:
+            return (None, len(rows))
+
+        # Compute minutes per trade in Python (SQLite has no MEDIAN()).
+        minutes = []
+        for r in rows:
+            try:
+                et = datetime.fromisoformat(r["entry_time"])
+                xt = datetime.fromisoformat(r["exit_time"])
+                delta_min = (xt - et).total_seconds() / 60.0
+                if delta_min > 0:
+                    minutes.append(delta_min)
+            except Exception:
+                continue
+        if len(minutes) < 5:
+            return (None, len(minutes))
+
+        minutes.sort()
+        n = len(minutes)
+        if n % 2 == 1:
+            median = minutes[n // 2]
+        else:
+            median = (minutes[n // 2 - 1] + minutes[n // 2]) / 2.0
+        return (round(median, 2), n)
+
+    # ── Phase 3.0.1 — Weekly / monthly / consecutive kill-switch queries ─────
+
+    def get_week_pnl(self) -> float:
+        """
+        Total ₹ P&L across closed trades from this Monday (ISO weekday 1)
+        through now. Used by the WEEKLY_LOSS_KILL_PCT circuit breaker.
+
+        Week defined as Monday 00:00 IST through current moment. Saturday +
+        Sunday have no trading so this naturally produces a 5-day window on
+        normal weeks.
+        """
+        today = date.today()
+        # ISO weekday: Monday=1 ... Sunday=7. Roll back to Monday.
+        monday = today - timedelta(days=today.weekday())
+        monday_iso = monday.isoformat()
+        with self._conn() as conn:
+            row = conn.execute(
+                """
+                SELECT COALESCE(SUM(pnl), 0)
+                FROM positions
+                WHERE entry_time >= ?
+                  AND status != 'open'
+                """,
+                (f"{monday_iso}T00:00:00",),
+            ).fetchone()[0]
+        return float(row)
+
+    def get_consecutive_losing_days(self) -> int:
+        """
+        Number of trading days going backward from today (exclusive of today)
+        where the day's total closed-trade P&L was strictly negative. Stops at
+        the first non-losing day. Days with ZERO closed trades are skipped
+        (don't reset the streak — silent days are neutral).
+
+        Used by the CONSECUTIVE_LOSING_DAYS_PAUSE safety net.
+        """
+        with self._conn() as conn:
+            # Aggregate closed-trade P&L per entry-date over the last 60 days
+            rows = conn.execute(
+                """
+                SELECT substr(entry_time, 1, 10) AS day,
+                       SUM(pnl)                  AS day_pnl,
+                       COUNT(*)                  AS n
+                FROM positions
+                WHERE entry_time >= date('now', '-60 day')
+                  AND status != 'open'
+                GROUP BY substr(entry_time, 1, 10)
+                ORDER BY day DESC
+                """
+            ).fetchall()
+        if not rows:
+            return 0
+        today_iso = date.today().isoformat()
+        streak = 0
+        for r in rows:
+            day = r["day"]
+            # Skip today itself — we're counting completed prior days
+            if day == today_iso:
+                continue
+            pnl = float(r["day_pnl"]) if r["day_pnl"] is not None else 0.0
+            if pnl < 0:
+                streak += 1
+            else:
+                # Win or break-even day → reset streak
+                break
+        return streak
+
+    def get_month_avg_r(self) -> tuple:
+        """
+        Mean pnl_r across all closed trades in the current calendar month.
+        Returns (avg_r, sample_size). Used by the monthly negative-R review
+        gate (informational — flags retrospective, doesn't auto-pause).
+        """
+        today = date.today()
+        month_start = today.replace(day=1).isoformat()
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT pnl_r
+                FROM positions
+                WHERE entry_time >= ?
+                  AND status != 'open'
+                  AND pnl_r IS NOT NULL
+                """,
+                (f"{month_start}T00:00:00",),
+            ).fetchall()
+        rs = [float(r["pnl_r"]) for r in rows if r["pnl_r"] is not None]
+        if not rs:
+            return (None, 0)
+        return (round(sum(rs) / len(rs), 3), len(rs))
+
     def get_consecutive_wins(self) -> int:
         """
         Fix #33 (C3) — count consecutive wins ending with the most recent

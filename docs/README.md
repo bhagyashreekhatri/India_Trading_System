@@ -79,7 +79,7 @@ Numbers (01, 04, 05x2, 07-18) reflect chronological order of analyses, not logic
 | Phase 2.2 — Sector-aware macro filter | doc 20 | ⛔ REJECTED — METAL fade head-fake evidence on 2026-05-12 |
 | Phase 2.3 — Stock-level decoupling rule | doc 21 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
 | Phase 2.5 — Hygiene cleanup ([LegacyRegime] tag, midday-lull log removed) | — | 🚀 READY to deploy |
-| Phase 2.6 — Runway check (replaces NO_NEW_ENTRY_AFTER clock rule) | doc 22 | 📝 SPEC drafted (2026-05-12), implementation pending |
+| Phase 2.6 — Runway check (replaces NO_NEW_ENTRY_AFTER clock rule) | doc 22 | ✅ IMPLEMENTED (shadow mode default; 8/8 acceptance tests pass) |
 | Phase 2 — Forward validation (5-15 sessions) | doc 17 | ⏳ STARTS TOMORROW |
 | Phase 3.0.1 — Weekly/Monthly safety nets (settings constants) | — | ✅ ADDED 2026-05-12 — wiring into crew.py pending |
 | Phase 3 — ₹50k live probe operations spec + probe-mode settings | doc 23 | 📝 SPEC + settings ready; pre-flight gates pending |

@@ -158,9 +158,70 @@ def run_eod_job():
     if now.weekday() == 4:   # Friday
         _print_weekly_scorecard(state)
 
+    # ── 7. Phase 3.0.1 — Monthly negative-R review ───────────────────────────
+    # On the last trading day of each calendar month, if MONTHLY_NEG_R_REVIEW
+    # is enabled, compute mean R across this month's closed trades. If
+    # negative, flag for retrospective. Informational only — does NOT pause
+    # the system. The pause decision is a human one.
+    try:
+        from config.settings import MONTHLY_NEG_R_REVIEW
+    except ImportError:
+        MONTHLY_NEG_R_REVIEW = True
+    if MONTHLY_NEG_R_REVIEW and _is_last_trading_day_of_month(now):
+        try:
+            avg_r, n = state.get_month_avg_r()
+        except Exception as e:
+            print(f"[EOD] month_avg_r query failed (non-fatal): {e}")
+            avg_r, n = (None, 0)
+        if avg_r is not None and n > 0:
+            print(f"\n{'─'*60}")
+            print(f"  📅 MONTH-END R REVIEW — {now.strftime('%B %Y')}")
+            print(f"  Trades:   {n}")
+            print(f"  Mean R:   {avg_r:+.3f}R")
+            if avg_r < 0:
+                print(f"  🔴 NEGATIVE-R MONTH — retrospective review recommended")
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🔴 <b>MONTH-END NEGATIVE R</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📅 {now.strftime('%B %Y')}\n"
+                        f"📊 Trades: {n}\n"
+                        f"📉 Mean R: {avg_r:+.3f}R\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"Retrospective review recommended. System NOT paused."
+                    )
+                except Exception:
+                    pass
+            else:
+                print(f"  🟢 Positive-R month — continue.")
+            print(f"{'─'*60}")
+
     print(f"\n{'='*60}")
     print(f"  EOD job complete — system learned from today's {len(stored)} trades.")
     print(f"{'='*60}\n")
+
+
+def _is_last_trading_day_of_month(now) -> bool:
+    """
+    Returns True if `now` is the last trading day (Mon-Fri) of its calendar
+    month. We approximate the last trading day as the last weekday of the
+    month — doesn't account for NSE holidays. A holiday on the final weekday
+    means the previous trading day was technically the last, and our check
+    misses it. Acceptable tradeoff for an informational flag.
+    """
+    from datetime import timedelta as _td
+    # Walk forward from `now` to month-end; if every remaining day is Sat/Sun,
+    # then `now` is the last weekday of the month.
+    if now.weekday() >= 5:    # Saturday or Sunday — definitely not
+        return False
+    today = now.date()
+    cursor = today + _td(days=1)
+    while cursor.month == today.month:
+        if cursor.weekday() < 5:   # Mon-Fri
+            return False
+        cursor += _td(days=1)
+    return True
 
 
 def _run_self_critique(closed_trades, chroma):

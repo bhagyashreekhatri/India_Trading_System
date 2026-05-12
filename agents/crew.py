@@ -196,6 +196,7 @@ class TradingCrew:
         # Inject the new agents into conviction so it can read them
         self.conviction.day_type = self.day_type
         self.conviction.vol_state = self.vol_state
+        self.conviction.state_mgr = self.state   # Phase 2.6 — runway check median-TTP1 lookup
         print("[Crew] Conviction-engine pipeline loaded (Phase 0 + 1 rebuild)")
         print("[Crew] Day-type classifier + volatility state agents active")
 
@@ -244,6 +245,44 @@ class TradingCrew:
             print(f"[Crew] Phase D pending-retest active: window={PENDING_RETEST_WINDOW_MIN}min, "
                   f"tolerance={PENDING_RETEST_TOLERANCE_PCT*100:.1f}%, "
                   f"max_drift={PENDING_RETEST_MAX_DRIFT_PCT*100:.1f}%")
+
+        # ── Phase 3.0.1 — Consecutive losing days check at boot ──────────────
+        # Read history once. If the prior streak has reached the configured
+        # threshold (default 5), set a pause flag that _allocate() consults to
+        # block new entries. Drawdown protection circuit breaker — designed to
+        # be triggered ONLY in pathological cases. Manual reset by clearing
+        # the flag (restart with a debug env-var or just sit out a winning day).
+        try:
+            from config.settings import CONSECUTIVE_LOSING_DAYS_PAUSE
+        except ImportError:
+            CONSECUTIVE_LOSING_DAYS_PAUSE = 5
+        try:
+            streak = self.state.get_consecutive_losing_days()
+        except Exception as e:
+            print(f"[Crew] consecutive-losses query failed (non-fatal): {e}")
+            streak = 0
+        self._consec_losing_days = streak
+        self._paused_consec_losses = streak >= CONSECUTIVE_LOSING_DAYS_PAUSE
+        if self._paused_consec_losses:
+            print(f"[Crew] ⏸ CONSECUTIVE-LOSSES PAUSE — {streak} losing days in a row "
+                  f"(threshold {CONSECUTIVE_LOSING_DAYS_PAUSE}). New entries blocked.")
+            try:
+                from tools.telegram_tools import _send
+                _send(
+                    f"⏸ <b>CONSECUTIVE-LOSING-DAYS PAUSE</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📉 Streak: {streak} losing days in a row\n"
+                    f"🚫 Threshold: {CONSECUTIVE_LOSING_DAYS_PAUSE}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"New entries blocked. Manual retrospective required."
+                )
+            except Exception:
+                pass
+        elif streak > 0:
+            # Informational — surface partial streaks below threshold
+            print(f"[Crew] Consecutive losing days: {streak} "
+                  f"(pause at {CONSECUTIVE_LOSING_DAYS_PAUSE})")
+
         alert_system_start()
 
     # ── Main entry point ──────────────────────────────────────────────────────
@@ -1108,6 +1147,54 @@ class TradingCrew:
                 except Exception:
                     pass
                 self._kill_switch_alerted_today = True
+            return
+
+        # ── Phase 3.0.1 — Weekly-drawdown kill switch ────────────────────────
+        # Upper-bound circuit breaker. If the cumulative ₹ P&L this trading
+        # week (Mon through now) crosses -WEEKLY_LOSS_KILL_PCT of CAPITAL,
+        # pause all new entries for the rest of the session AND set a flag
+        # that persists through the day. Designed to halt before a chain of
+        # bad days compounds. Existing positions still managed.
+        try:
+            from config.settings import WEEKLY_LOSS_KILL_PCT
+        except ImportError:
+            WEEKLY_LOSS_KILL_PCT = 0.075
+        week_floor = -CAPITAL * WEEKLY_LOSS_KILL_PCT
+        try:
+            week_pnl = self.state.get_week_pnl()
+        except Exception as e:
+            print(f"[Allocator] week_pnl query failed (non-fatal): {e}")
+            week_pnl = 0.0
+        if week_pnl <= week_floor:
+            print(f"[Allocator] 🔴 WEEKLY-DRAWDOWN KILL — "
+                  f"this week's P&L ₹{week_pnl:+,.0f} ≤ floor ₹{week_floor:+,.0f} "
+                  f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"BLOCKING new entries — manual review required.")
+            if not getattr(self, "_week_kill_alerted_today", False):
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🔴 <b>WEEKLY DRAWDOWN KILL SWITCH</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📉 Week P&L: ₹{week_pnl:+,.0f}\n"
+                        f"🚫 Floor: ₹{week_floor:+,.0f} "
+                        f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,})\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"All new entries blocked. Manual retrospective required."
+                    )
+                except Exception:
+                    pass
+                self._week_kill_alerted_today = True
+            return
+
+        # ── Phase 3.0.1 — Consecutive losing days pause ──────────────────────
+        # If the boot-time check (see __init__) flagged that the prior streak
+        # of losing days has reached CONSECUTIVE_LOSING_DAYS_PAUSE (default 5),
+        # block entries until manual reset.
+        if getattr(self, "_paused_consec_losses", False):
+            print(f"[Allocator] ⏸ CONSECUTIVE-LOSSES PAUSE — "
+                  f"{getattr(self, '_consec_losing_days', 0)} losing days streak. "
+                  f"Manual reset required to resume.")
             return
 
         # ── Tighten gate at +2R (Fix #11) — ride existing winners only ───────
