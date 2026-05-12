@@ -24,6 +24,7 @@ The single-source-of-truth fix log lives at `../PROJECT_MEMORY.md`. The docs in 
 | 8 | [`18_Rebuild_Status_2026-05-11.md`](18_Rebuild_Status_2026-05-11.md) | **What's actually shipped today (Phase 0 + 1 + 1.5-1.7)** | **Current state** |
 | 9 | [`19_Discovery_Engine_Spec_2026-05-12.md`](19_Discovery_Engine_Spec_2026-05-12.md) | Phase 2.1 — Top-mover scanner for invisible mid-caps (JINDRILL evidence) | Spec for next ship |
 | 10 | [`20_Sector_Aware_Macro_Spec_2026-05-12.md`](20_Sector_Aware_Macro_Spec_2026-05-12.md) | Phase 2.2 — Sector decoupling relief on STRONG_RED days (ONGC blocked-but-clean evidence) | Spec for next ship |
+| 11 | [`21_Stock_Decoupling_Spec_2026-05-12.md`](21_Stock_Decoupling_Spec_2026-05-12.md) | Phase 2.3 — Per-stock decoupling rule. Catches ONGC-class single-stock catalysts on macro-RED days. Replaces doc 20 after METAL sector head-fake evidence. | **Implemented + shadow** |
 
 ## Reference docs (older context)
 
@@ -71,8 +72,10 @@ Numbers (01, 04, 05x2, 07-18) reflect chronological order of analyses, not logic
 | Phase 1.6 — NR7 expansion | doc 15 | ✅ COMPLETE (today) |
 | Phase 1.7 — Volatility-adaptive sizing | doc 11 + 14 | ✅ COMPLETE (today) |
 | Phase 1.8 — Cleanup deprecated constants | doc 17 | 🟡 DEFERRED — cosmetic, no behavior impact |
-| Phase 2.1 — Discovery Engine (top-mover scanner) | doc 19 | 📝 SPEC drafted (2026-05-12), implementation pending |
-| Phase 2.2 — Sector-aware macro filter | doc 20 | 📝 SPEC drafted (2026-05-12), implementation pending |
+| Phase 2.0 — Telemetry patch ([MarketState] / [FHH] / [Day-Type] / [Vol-State] logs) | — | ✅ SHIPPED (2026-05-12) |
+| Phase 2.1 — Discovery Engine (top-mover scanner) | doc 19 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
+| Phase 2.2 — Sector-aware macro filter | doc 20 | ⛔ REJECTED — METAL fade head-fake evidence on 2026-05-12 |
+| Phase 2.3 — Stock-level decoupling rule | doc 21 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
 | Phase 2 — Forward validation (5-15 sessions) | doc 17 | ⏳ STARTS TOMORROW |
 | Phase 3 — ₹50k live probe | doc 17 | ⏳ Week 2-3 |
 | Phase 4 — ₹3L deployment | doc 17 | ⏳ Month 2 |

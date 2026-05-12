@@ -162,14 +162,75 @@ class ConvictionEngine:
                 failed=["before 10:15 IST"],
             )
 
-        if macro_snap.state == "STRONG_RED":
-            return _skip(
-                f"macro_strong_red ({macro_snap.reasoning})",
-                macro_state="STRONG_RED", fhh_state="-",
-                failed=["macro STRONG_RED — 89% of these days close negative"],
-            )
+        if macro_snap.state in ("STRONG_RED", "RED"):
+            # Phase 2.3 — stock-level decoupling override. On adversarial macro
+            # days, a single stock that meets the six-condition rule (large
+            # magnitude + volume + HOD proximity + sector-not-severely-red +
+            # own-FHH-clean-break + after 11:00 IST) may still be admitted at
+            # tier B- (half-size). Catches the 2026-05-12 ONGC +5.93% case
+            # that the binary macro gate blocked.
+            #
+            # Default-OFF via STOCK_DECOUPLING_ENABLED. When OFF the rule still
+            # evaluates and logs admits (shadow mode), but returns the same
+            # SKIP as before — so we collect evidence without trading on it.
+            from config.settings import STOCK_DECOUPLING_ENABLED
+            try:
+                from agents.stock_decoupling import evaluate_for_conviction
+                import config.settings as _settings_mod
+                # The decoupling rule needs the Kite client. Conviction engine
+                # was originally pure (no Kite); we get it via the FHH
+                # detector's reference. This is a thin coupling — acceptable
+                # for one feature, and easily refactored later.
+                kite_ref = getattr(self.fhh_detector, "kite", None)
+                if kite_ref is not None:
+                    dec_res = evaluate_for_conviction(
+                        symbol=symbol,
+                        stock_quote=stock_quote,
+                        fhh_detector=self.fhh_detector,
+                        kite=kite_ref,
+                        settings_module=_settings_mod,
+                        now=now,
+                    )
+                    if dec_res.admit:
+                        marker = "ENABLED" if STOCK_DECOUPLING_ENABLED else "SHADOW"
+                        print(
+                            f"[Decoupling] {symbol} ADMIT-{marker} on macro "
+                            f"{macro_snap.state} — {dec_res.reason}"
+                        )
+                        if STOCK_DECOUPLING_ENABLED:
+                            # Build a tier-B-equivalent result with half-size.
+                            from config.settings import CONVICTION_RISK_INR, CONVICTION_TARGET_INR
+                            return ConvictionResult(
+                                tier="B",
+                                size_multiplier=0.5 * dec_res.size_multiplier * 2,  # 0.5 net
+                                risk_inr=CONVICTION_RISK_INR.get("B", 750) * 0.5,
+                                target_inr=CONVICTION_TARGET_INR.get("B", 1500) * 0.5,
+                                reasoning=f"decoupling-override-on-{macro_snap.state}: {dec_res.reason}",
+                                macro_state=macro_snap.state,
+                                fhh_state="decoupling_override",
+                                failed_filters=[],
+                            )
+                        # Shadow mode — fall through to skip below
+                    elif dec_res.stock_pct >= 2.0:
+                        # Only log near-misses (stock at least up 2%) to keep
+                        # log volume manageable on a 60-symbol scan.
+                        print(
+                            f"[Decoupling] {symbol} would-skip — "
+                            f"{dec_res.reason} "
+                            f"(stock {dec_res.stock_pct:+.2f}%, "
+                            f"vol×{dec_res.volume_ratio:.2f}, "
+                            f"sector {dec_res.sector_pct:+.2f}%)"
+                        )
+            except Exception as e:
+                print(f"[Decoupling] evaluator error (non-fatal): {e}")
 
-        if macro_snap.state == "RED":
+            # Normal RED / STRONG_RED skip path (unchanged behaviour by default)
+            if macro_snap.state == "STRONG_RED":
+                return _skip(
+                    f"macro_strong_red ({macro_snap.reasoning})",
+                    macro_state="STRONG_RED", fhh_state="-",
+                    failed=["macro STRONG_RED — 89% of these days close negative"],
+                )
             return _skip(
                 f"macro_red ({macro_snap.reasoning})",
                 macro_state="RED", fhh_state="-",

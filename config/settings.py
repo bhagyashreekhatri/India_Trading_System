@@ -373,6 +373,41 @@ DISCOVERY_BLACKLIST_LOSS_THRESHOLD = 2      # losses before auto-blacklist
 DISCOVERY_BLACKLIST_DAYS         = 7        # blacklist duration (trading days)
 DISCOVERY_ALLOW_TRADES           = False    # SHADOW MODE — flip to True after validation
 
+
+# ── Phase 2.3 — Stock-level decoupling rule ──────────────────────────────────
+# See docs/21_Stock_Decoupling_Spec_2026-05-12.md and agents/stock_decoupling.py
+#
+# On a macro RED / STRONG_RED day, a single stock that is ALL OF:
+#   - +STOCK_DECOUPLING_MIN_PCT (e.g. 4.0%) above prev close
+#   - on STOCK_DECOUPLING_MIN_VOL_RATIO+ (e.g. 1.5x) avg volume
+#   - within STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT of intraday high
+#   - whose sector index is NOT below STOCK_DECOUPLING_SECTOR_FLOOR_PCT
+#   - with its own first-hour high cleanly broken
+# may be admitted at tier B- (half-size of B). Catches the 2026-05-12 ONGC
+# +5.93% case that the binary macro filter blocked.
+STOCK_DECOUPLING_ENABLED               = False   # SHADOW MODE — log only until validated
+STOCK_DECOUPLING_MIN_PCT               = 4.0     # stock %chg vs prev close
+STOCK_DECOUPLING_MIN_VOL_RATIO         = 1.5     # today_vol / 20d_avg_vol
+STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT = 0.5     # LTP within X% of intraday high
+STOCK_DECOUPLING_SECTOR_FLOOR_PCT      = -1.0    # sector chg ≥ this floor
+
+# Symbol-sector → NIFTY sector-index name mapping. Symbols not in this map
+# fall through with sector_quote=None which the rule treats as PASS (neutral).
+# Keep the mapping conservative — only sectors that map cleanly to a NIFTY
+# index get a sector check.
+SYMBOL_SECTOR_TO_INDEX = {
+    "IT":        "NIFTY IT",
+    "BANKING":   "NIFTY BANK",
+    "NBFC":      "NIFTY FIN SERVICE",
+    "AUTO":      "NIFTY AUTO",
+    "AUTO_ANC":  "NIFTY AUTO",
+    "PHARMA":    "NIFTY PHARMA",
+    "METALS":    "NIFTY METAL",
+    "OIL_GAS":   "NIFTY ENERGY",
+    "POWER":     "NIFTY ENERGY",
+    "FMCG":      "NIFTY FMCG",
+}
+
 # ═══════════════════════════════════════════════════════════════════════════
 # DEPRECATED — to be removed after conviction-engine forward-validation:
 #   SCORE_SIZE_TIERS, HOUR_GATE_NUDGES, MIN_SCORE_*, CONFLUENCE_MULTIPLIER_*,
