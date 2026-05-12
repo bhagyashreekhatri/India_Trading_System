@@ -184,11 +184,19 @@ class TradingCrew:
         from agents.market_state import MarketStateAgent
         from agents.fhh_break_detector import FhhBreakDetector
         from agents.conviction_engine import ConvictionEngine
+        from agents.day_type_classifier import DayTypeClassifier
+        from tools.volatility_state import VolatilityStateAgent
 
         self.market_state  = MarketStateAgent(self.kite)
         self.fhh_detector  = FhhBreakDetector(self.kite)
+        self.day_type      = DayTypeClassifier(self.kite)        # Phase 1.5
+        self.vol_state     = VolatilityStateAgent(self.kite)     # Phase 1.6/1.7
         self.conviction    = ConvictionEngine(self.market_state, self.fhh_detector)
-        print("[Crew] Conviction-engine pipeline loaded (Phase 0 rebuild)")
+        # Inject the new agents into conviction so it can read them
+        self.conviction.day_type = self.day_type
+        self.conviction.vol_state = self.vol_state
+        print("[Crew] Conviction-engine pipeline loaded (Phase 0 + 1 rebuild)")
+        print("[Crew] Day-type classifier + volatility state agents active")
 
         self._tick   = 0
         self._breadth_cache: dict = {}    # refreshed every ~15 min

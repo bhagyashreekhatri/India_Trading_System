@@ -73,6 +73,10 @@ class ConvictionEngine:
     def __init__(self, market_state_agent, fhh_detector):
         self.market_state = market_state_agent
         self.fhh_detector = fhh_detector
+        # Phase 1.5/1.6/1.7 — injected by crew.py after construction.
+        # Default None so tests using just market+fhh keep working.
+        self.day_type = None
+        self.vol_state = None
 
     def evaluate(
         self,
@@ -229,16 +233,60 @@ class ConvictionEngine:
                     failed=[f"{symbol} FHH not yet broken"],
                 )
 
+        # ── Day-type classifier (Phase 1.5 — refine routing) ───────────────
+        # By 11:00 IST the day's forming structure is readable. We skip the
+        # most adverse class — TREND_FORMING_DN — because long-only entries
+        # in a clearly down-trending tape have very low success.
+        # RANGE_FORMING days don't favor momentum_breakout (the only active
+        # setup) — momentum needs expansion, not compression.
+        if self.day_type is not None:
+            try:
+                dt_snap = self.day_type.get_snapshot(now)
+                if dt_snap.type == "TREND_FORMING_DN":
+                    return _skip(
+                        f"day_type_trend_down ({dt_snap.reasoning})",
+                        macro_state=macro_snap.state, fhh_state="ok_but_day_down",
+                        failed=[dt_snap.reasoning],
+                    )
+                if dt_snap.type == "RANGE_FORMING":
+                    return _skip(
+                        f"day_type_range_compression ({dt_snap.reasoning})",
+                        macro_state=macro_snap.state, fhh_state="ok_but_day_compressed",
+                        failed=[dt_snap.reasoning],
+                    )
+                # TREND_FORMING_UP / BALANCED / WAITING → proceed (BALANCED
+                # is fine — the conviction tier handles caution sizing).
+            except Exception as e:
+                print(f"[Conviction] day_type read error (proceeding): {e}")
+
+        # ── Volatility state read (Phase 1.7 — adaptive size mult) ─────────
+        # The size multiplier is applied DOWNSTREAM in crew.py when computing
+        # qty. We just read the state here so the conviction result can
+        # surface it (e.g., via reasoning text) and crew.py can apply it.
+        vol_size_mult = 1.0
+        vol_note = ""
+        if self.vol_state is not None:
+            try:
+                vs = self.vol_state.get_state(now)
+                if vs is not None:
+                    vol_size_mult = vs.size_multiplier
+                    if vs.is_nr7:
+                        vol_note = " (post-NR7 expansion expected)"
+                    if vs.regime != "NORMAL":
+                        vol_note = f" (vol {vs.regime.lower()}, size ×{vs.size_multiplier:.1f}){vol_note}"
+            except Exception as e:
+                print(f"[Conviction] vol_state read error (proceeding): {e}")
+
         # ── Tier mapping ────────────────────────────────────────────────────
         # All gates passed. Map (macro_state, fhh_state) to tier.
 
         if macro_snap.state == "STRONG_GREEN":
             return ConvictionResult(
                 tier="S",
-                size_multiplier=1.0,
-                risk_inr=CONVICTION_RISK_INR["S"],
+                size_multiplier=1.0 * vol_size_mult,
+                risk_inr=CONVICTION_RISK_INR["S"] * vol_size_mult,
                 target_inr=CONVICTION_TARGET_INR["S"],
-                reasoning=f"TIER_S — STRONG_GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD (30-month: 100% NIFTY close positive, n=44)",
+                reasoning=f"TIER_S — STRONG_GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD{vol_note}",
                 macro_state="STRONG_GREEN",
                 fhh_state="triple_confluence_break",
                 failed_filters=[],
@@ -247,10 +295,10 @@ class ConvictionEngine:
         if macro_snap.state == "GREEN":
             return ConvictionResult(
                 tier="A",
-                size_multiplier=1.0,
-                risk_inr=CONVICTION_RISK_INR["A"],
+                size_multiplier=1.0 * vol_size_mult,
+                risk_inr=CONVICTION_RISK_INR["A"] * vol_size_mult,
                 target_inr=CONVICTION_TARGET_INR["A"],
-                reasoning=f"TIER_A — GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD (30-month: 97% NIFTY close positive, n=38)",
+                reasoning=f"TIER_A — GREEN macro + NIFTY FHH + {symbol} FHH + stock at HOD{vol_note}",
                 macro_state="GREEN",
                 fhh_state="triple_confluence_break",
                 failed_filters=[],
@@ -268,10 +316,10 @@ class ConvictionEngine:
                 )
             return ConvictionResult(
                 tier="B",
-                size_multiplier=0.5,
-                risk_inr=CONVICTION_RISK_INR["B"],
+                size_multiplier=0.5 * vol_size_mult,
+                risk_inr=CONVICTION_RISK_INR["B"] * vol_size_mult,
                 target_inr=CONVICTION_TARGET_INR["B"],
-                reasoning=f"TIER_B — YELLOW + FHH + {grade_str} grade (30-month: 88% close positive, n=98) — HALF SIZE",
+                reasoning=f"TIER_B — YELLOW + FHH + {grade_str} grade — HALF SIZE{vol_note}",
                 macro_state="YELLOW",
                 fhh_state="clean_high_break",
                 failed_filters=[],
