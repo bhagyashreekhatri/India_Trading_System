@@ -1,5 +1,6 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-05-11 13:55 IST | Operator: Bhagya*
+*Last updated: 2026-05-12 ~17:00 IST | Operator: Bhagya*
+*Recent activity: Phase 2.0-3.0.1 shipped today after 30-month NIFTY analysis confirmed Phase 0 + 1 rebuild.*
 
 ---
 
@@ -349,11 +350,69 @@ If any of those three is "no" — the code isn't ready.
 - `news_cache.json` present after first session; reload logged on restart.
 - All generated prices are multiples of ₹0.05.
 
+---
 
+## 🏗️ PHASE 0 → 3.0.1 REBUILD (2026-05-11 → 2026-05-12)
+
+**Context:** The 30-month NIFTY analysis (docs 13-16, n=584 sessions) showed the old 0-10 scoring engine with regime-multiplier nudges was *anti-predictive* — A++ trades returned -0.095R while A trades returned +0.092R across 280 audited trades. Complete teardown + rebuild against empirically-validated structural rules. New code is feature-flagged; the old `_score_signals` path is preserved for fallback during shadow validation.
+
+### Phase 0 — Foundation (shipped 2026-05-11)
+
+| # | Phase | What changed | Files | Validation |
+|---|---|---|---|---|
+| 61 | **Phase 0** — Macro+FHH+Conviction stack | New `market_state.py` (10:15 IST 5-state filter STRONG_GREEN/GREEN/YELLOW/RED/STRONG_RED, validated 98%/72%/coin/74%/89% close-precision n=584); new `fhh_break_detector.py` (first-hour-high break per-symbol, validated 97-100% close-positive when combined with macro); new `conviction_engine.py` returns tier S/A/B/SKIP replacing the 0-10 score. Old `ScoringEngine` deleted; minimal neutral stub retained for crew.py import compat | `agents/market_state.py`, `agents/fhh_break_detector.py`, `agents/conviction_engine.py`, `scoring/engine.py` | 30-month backtest + sandbox unit tests |
+| 62 | **Phase 0.5/0.6** — Strip legacy nudges + trim setups | Removed empirically-wrong: HOUR_GATE_NUDGES application, midday lunch gate, sector_nudge, breadth_pen, winner-streak gate raise. Trimmed `_detect_setups_multi` to ONLY produce MOMENTUM_BREAKOUT (6 other detectors dormant). Extracted tick-rounding helpers to `tools/tick_utils.py` | `agents/crew.py`, `tools/pattern_tools.py`, `tools/tick_utils.py` | pre-flight script + 7-test suite |
+| 63 | **Phase 1.1** — Stock-level FHH + HOD proximity | Conviction engine now requires the STOCK's own first-hour-high to be cleanly broken (not just NIFTY's). HOD-proximity gate rejects entries > 0.5% below intraday high (don't chase extended moves) | `agents/conviction_engine.py`, `config/settings.py` (STOCK_HOD_PROXIMITY_PCT=0.005) | engine tests pass |
+| 64 | **Phase 1.2** — Pre-TP1 trail SL | Move SL to break-even after +0.5R held 10 min. Uses cancel_order + place_sl_order (NOT modify_order which doesn't exist on KiteDataClient — caught in pre-flight) | `agents/crew.py`, `config/settings.py` (PRE_TP1_TRAIL_ENABLED, PRE_TP1_TRAIL_TRIGGER_R=0.5, PRE_TP1_TRAIL_HOLD_MIN=10) | targeted unit test |
+| 65 | **Phase 1.3** — Whipsaw freeze | When NIFTY breaks BOTH first-hour-high AND first-hour-low (whipsaw signature, 70% historical chop), block all new entries | `agents/conviction_engine.py`, `config/settings.py` (WHIPSAW_FREEZE_ENABLED=True) | engine tests pass |
+| 66 | **Phase 1.5/1.6/1.7** — Day-type + NR7 + Volatility sizing | `agents/day_type_classifier.py` classifies at 11:00 IST (TREND_FORMING_UP/DN, RANGE_FORMING, BALANCED) — conviction skips TREND_FORMING_DN and RANGE_FORMING. `tools/volatility_state.py` detects NR7 day-after expansion (66% follow-through) + COMPRESSED/NORMAL/EXPANDED/EXTREME regime → size multiplier 0.7-1.2× | `agents/day_type_classifier.py`, `tools/volatility_state.py`, `agents/conviction_engine.py` | engine tests pass |
+
+### Phase 2 — Visibility, capacity, override (shipped 2026-05-12)
+
+| # | Phase | What changed | Files | Validation |
+|---|---|---|---|---|
+| 67 | **Phase 2.0** — Telemetry patch | Added `[MarketState]`, `[FHH]`, `[Day-Type]`, `[Vol-State]` log lines so the new Phase 1 modules are visible in journalctl. Refresh regime every tick (was every 5 ticks → went stale on adversarial days). Fixed misleading "1 entries" counter (now counts post-conviction admits, not scorer passes). Removed stale "-0.7 penalty" breadth log message (penalty was already zeroed in Phase 0.5) | `agents/market_state.py`, `agents/fhh_break_detector.py`, `agents/day_type_classifier.py`, `tools/volatility_state.py`, `agents/crew.py`, `main.py` | live observation 2026-05-12 |
+| 68 | **Phase 2.1** — Discovery Engine | New `agents/discovery_engine.py`. Seeds candidate pool from `kite.instruments(NSE)` at boot (~600-900 names), scans every 5 min, admits names crossing ±2.5% on >1.5× volume with ≥₹10cr turnover + ≤0.15% spread. Bounded: 5 new/scan, 15 total live, 40/session. Auto-blacklist after 2 losses (persisted to `discovery_blacklist.json`). **Shadow mode default** via `DISCOVERY_ALLOW_TRADES=False`. Catches the 2026-05-12 JINDRILL +7.81% / OIL India +7.66% class of names that were structurally invisible to the 150-stock hardcoded universe | `agents/discovery_engine.py`, `agents/crew.py`, `config/settings.py` | 13/13 acceptance tests on today's tape |
+| 69 | **Phase 2.2** — Sector-aware macro | **REJECTED** based on same-day evidence. Original spec (doc 20): admit longs in sectors that are DECOUPLED_STRONG at 10:15 even on STRONG_RED days. 2026-05-12 tape: METAL +0.52% morning → -0.35% close. Sector decoupling collapsed entirely; relief admits would have lost money. Replaced by Phase 2.3 stock-level rule instead | — (spec only at `docs/20_*.md`) | counterfactual replay against 2026-05-12 tape |
+| 70 | **Phase 2.3** — Stock decoupling override | New `agents/stock_decoupling.py`. On macro RED/STRONG_RED days, admits longs at tier B- (half-size) when ALL 6 conditions hold: stock %chg ≥ +4%, vol ratio ≥ 1.5×, LTP within 0.5% of HOD, sector index ≥ -1.0%, stock's own FHH cleanly broken, ≥ 11:00 IST. Catches ONGC +5.93% case from 2026-05-12 that pure macro filter blocked. **Shadow mode default** via `STOCK_DECOUPLING_ENABLED=False` | `agents/stock_decoupling.py`, `agents/conviction_engine.py`, `config/settings.py` (6 thresholds + SYMBOL_SECTOR_TO_INDEX mapping) | 10/10 acceptance tests |
+| 71 | **Phase 2.5** — Hygiene | Removed midday-lull `[Crew] Midday lull (13:00–14:00) — selective only` print spam (gate is informational only — no behavior). Retagged legacy regime detector as `[LegacyRegime] RECOVERING|EVENT|TRENDING|CHOPPY ... (informational only; [MarketState] gates entries)` to distinguish from Phase 0 conviction state. NO_NEW_ENTRY_AFTER stayed at 14:45 (Fix #60 rollback was correct — 13:30 was too aggressive) | `agents/crew.py` | live in next deploy |
+| 72 | **Phase 2.6** — Runway check (shadow) | New `agents/runway_check.py` replaces the blunt `NO_NEW_ENTRY_AFTER` clock with empirical setup-aware: `median_TTP1 × 1.5 ≤ remaining_minutes_to_14:45`. Reads median time-to-TP1 per setup from `trade_state.db` (last 50 wins). Bootstrap fallback ladder (setup-specific → global 45m) for cold start. Absolute floor: never enter < 20 min before EOD. **Shadow mode default** via `RUNWAY_CHECK_ENABLED=False` + `RUNWAY_CHECK_LOG_SHADOW=True`. Final removal of clock categories from entry path | `agents/runway_check.py`, `memory/trade_state.py` (new `get_median_ttp1_minutes()`), `agents/conviction_engine.py`, `config/settings.py` (7 constants + setup defaults) | 8/8 acceptance tests |
+
+### Phase 3.0.1 — Live-probe safety nets (shipped 2026-05-12)
+
+| # | What changed | Files | Validation |
+|---|---|---|---|
+| 73 | **Weekly drawdown kill** (-7.5% of CAPITAL → block entries + Telegram alert) + **Boot-time consecutive-losing-days pause** (5 losing days → block until manual reset) + **Monthly negative-R review** (last trading day → flag for retrospective, no auto-pause). Three new queries on TradeStateManager: `get_week_pnl()`, `get_consecutive_losing_days()`, `get_month_avg_r()` | `memory/trade_state.py`, `agents/crew.py`, `jobs/eod_job.py`, `config/settings.py` (WEEKLY_LOSS_KILL_PCT=0.075, CONSECUTIVE_LOSING_DAYS_PAUSE=5, MONTHLY_NEG_R_REVIEW=True) | 10/10 acceptance tests |
+| 74 | **Probe-mode settings + helpers** (Phase 3 go-live prep). `PROBE_MODE_ENABLED` flag (default False) + `PROBE_CAPITAL=50_000` + scaled risk table (S/A=₹500, B=₹250) + helper functions `get_active_capital()` / `get_active_max_positions()` / `get_active_conviction_risk()` / `get_active_conviction_target()`. Footgun-prevention: flipping `PAPER_TRADING=False` alone would route real orders at paper-sized (₹15L) risk — must also flip `PROBE_MODE_ENABLED=True` | `config/settings.py` | settings constant verification |
+
+### Open / pending after this work
+
+- **DISCOVERY_ALLOW_TRADES = False** (shadow) — flip after 3-5 sessions of clean shadow logs
+- **STOCK_DECOUPLING_ENABLED = False** (shadow) — flip after 3-5 sessions
+- **RUNWAY_CHECK_ENABLED = False** (shadow, logs admit-shadow / would-skip lines) — flip after 2 sessions
+- **PAPER_TRADING = True** + **PROBE_MODE_ENABLED = False** — flip both simultaneously at Phase 3 start (target: ~3 weeks out)
+- **B1 (hardcoded sector-priority filter)** + **B7 (RVOL 2.0 threshold)** — KEEP for now (saved a loss on 2026-05-12); empirical back-test deferred to Phase 3.x
+- **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only
+
+### Doc index after this work
+
+- doc 01-04: original architecture + historical analysis (unchanged)
+- doc 05-12: setup audits, validation reports (auto-generated where applicable)
+- doc 13: 6-month scalper research (10:15 macro discovery)
+- doc 14: 18-month OOS validation
+- doc 15: setup pattern library (FHH break + day-type + NR7 + vol regime)
+- doc 16: 30-month final analysis (584 sessions — the empirical foundation)
+- doc 17: full rebuild plan
+- doc 18: rebuild status (Phase 0+1)
+- **doc 19: Discovery Engine spec (Phase 2.1)**
+- **doc 20: Sector-aware macro spec — REJECTED**
+- **doc 21: Stock decoupling spec (Phase 2.3)**
+- **doc 22: Runway check spec (Phase 2.6)**
+- **doc 23: Phase 3 live probe operations playbook**
 
 ---
 
-## 🔥 OPEN CRITICAL BUG — paper-trade fill-price mismatch (flagged 2026-04-29)
+## ✅ RESOLVED — paper-trade fill-price mismatch (flagged 2026-04-29, fixed via Fix #13)
 ```
 Symptom (Bhagya, live observation 2026-04-29):
   Telegram entry alert says M&MFIN bought @ ₹320.55.
