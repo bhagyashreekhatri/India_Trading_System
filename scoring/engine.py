@@ -176,3 +176,97 @@ class ScoredSignal:
     reason:       str
     is_valid:     bool
     proximity_ok: bool
+
+
+# ─── ScoringEngine stub (Phase 0 rebuild — DEPRECATED) ──────────────────────
+#
+# The original ScoringEngine was deleted (it was the 0-10 score system with
+# multiplicative regime/news/sector nudges that was empirically anti-predictive).
+# This stub remains because crew.py's legacy `_score_signals` path still
+# instantiates `ScoringEngine()` and calls `.calculate(...)` to produce a
+# ScoreComponents object for telemetry display.
+#
+# The conviction_engine (agents/conviction_engine.py) is the actual entry
+# authority. This stub returns NEUTRAL components (raw_score = 5.0, grade = B)
+# so the legacy path keeps booting; conviction_engine gates real decisions.
+
+class ScoringEngine:
+    """
+    DEPRECATED stub. Returns neutral telemetry-only ScoreComponents.
+
+    The real entry authority is agents/conviction_engine.py.
+
+    Kept so crew.py's legacy `_score_signals` keeps booting during the
+    feature-flagged rollout. After conviction_engine forward-validates, the
+    legacy `_score_signals` body should be deleted and this stub removed.
+    """
+
+    def calculate(
+        self,
+        signal:  RawSignal,
+        volume:  VolumeData,
+        context: MarketContext,
+        rs:      RelativeStrengthData,
+        news:    NewsData,
+    ) -> ScoredSignal:
+        """
+        Returns a neutral ScoredSignal. The conviction engine in crew.py
+        runs AFTER this and is what actually decides whether to enter.
+
+        Setup-quality is naively scored from the candle body ratio (0-3).
+        Everything else defaults to 0. raw_score lands ~3-6; multiplier 1.0;
+        grade derived from final_score buckets.
+
+        This is JUST telemetry — the conviction engine is the real gate.
+        """
+        # Naive setup quality from candle body ratio (0-3 scale)
+        setup_quality = max(0.0, min(3.0, signal.candle_body_ratio * 3.0))
+
+        # Volume strength based on volume_ratio (0-2 scale)
+        vol_strength = max(0.0, min(2.0, (volume.volume_ratio - 0.8) * 1.5))
+
+        # Market alignment based on trend alignment + breadth (0-2)
+        mkt_align = (1.0 if context.market_trend_aligned else 0.5) + \
+                    max(0.0, min(1.0, context.breadth_score - 0.4))
+
+        # Relative strength (0-2)
+        rs_score = 2.0 if rs.outperforming else max(0.0, min(2.0, 1.0 + rs.rs_delta * 0.3))
+
+        # News (0-1) — kept for backward compat, but news_score from caller is
+        # mostly 0.5 (default) since news is moved to cold-path only.
+        news_score = max(0.0, min(1.0, 0.5 + news.sentiment * 0.5))
+
+        raw = setup_quality + vol_strength + mkt_align + rs_score + news_score
+        raw = round(min(10.0, max(0.0, raw)), 2)
+
+        # No regime multiplier — that was the broken part of the old engine.
+        final = raw
+
+        # Grade buckets (telemetry only — does not gate entries)
+        if   final >= 9.0: grade = Grade.A_PLUS_PLUS
+        elif final >= 8.0: grade = Grade.A_PLUS
+        elif final >= 7.0: grade = Grade.A
+        elif final >= 5.0: grade = Grade.B
+        else:              grade = Grade.C
+
+        comp = ScoreComponents(
+            setup_quality=round(setup_quality, 2),
+            volume_strength=round(vol_strength, 2),
+            market_alignment=round(mkt_align, 2),
+            relative_strength=round(rs_score, 2),
+            news_sentiment=round(news_score, 2),
+            raw_score=raw,
+            regime_multiplier=1.0,
+            final_score=final,
+            grade=grade,
+            skip_reason="",
+        )
+
+        return ScoredSignal(
+            signal=signal,
+            components=comp,
+            confidence=max(0.0, min(1.0, signal.close_position)),
+            reason=f"telemetry-only score {final:.1f} ({grade.value}); conviction_engine is the real gate",
+            is_valid=(final >= 5.0),
+            proximity_ok=True,   # conviction_engine handles proximity now
+        )
