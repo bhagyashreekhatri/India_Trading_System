@@ -1483,11 +1483,22 @@ class TradingCrew:
                                     self.state.update_stop_loss(p.id, new_sl)
                                     p.stop_loss = new_sl
                                     # Best-effort SL-M order replacement (live mode)
+                                    # Pattern mirrors _partial_exit_tp1 / _try_trail_sl: cancel
+                                    # old SL-M, place new one at new trigger. modify_order isn't
+                                    # in KiteDataClient — cancel+replace is the supported path.
                                     try:
                                         if not PAPER_TRADING and getattr(p, "sl_order_id", None):
-                                            self.kite.modify_order(p.sl_order_id, trigger_price=new_sl)
-                                    except Exception:
-                                        pass
+                                            self.kite.cancel_order(p.sl_order_id)
+                                            new_oid = self.kite.place_sl_order(
+                                                symbol=p.symbol,
+                                                quantity=p.quantity_remaining,
+                                                trigger_price=new_sl,
+                                                direction=p.direction,
+                                            )
+                                            if new_oid:
+                                                self.state.update_sl_order_id(p.id, new_oid)
+                                    except Exception as _e:
+                                        print(f"[PreTP1Trail] SL-M replacement failed on {p.symbol}: {_e}")
                         elif pnl_r < PRE_TP1_TRAIL_TRIGGER_R and p.id in self._pre_tp1_first_seen:
                             # Dropped below the trigger before we got 10 min hold
                             # — reset the timer so subsequent re-cross requires
