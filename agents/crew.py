@@ -186,6 +186,7 @@ class TradingCrew:
         from agents.conviction_engine import ConvictionEngine
         from agents.day_type_classifier import DayTypeClassifier
         from tools.volatility_state import VolatilityStateAgent
+        from agents.discovery_engine import DiscoveryEngine
 
         self.market_state  = MarketStateAgent(self.kite)
         self.fhh_detector  = FhhBreakDetector(self.kite)
@@ -197,6 +198,20 @@ class TradingCrew:
         self.conviction.vol_state = self.vol_state
         print("[Crew] Conviction-engine pipeline loaded (Phase 0 + 1 rebuild)")
         print("[Crew] Day-type classifier + volatility state agents active")
+
+        # Phase 2.1 — Discovery Engine. Seeds candidate pool at boot, scans
+        # every DISCOVERY_SCAN_INTERVAL_SEC during market hours, surfaces
+        # mid-cap movers outside the hardcoded universe (JINDRILL-class names).
+        # Shadow mode default — DISCOVERY_ALLOW_TRADES gates whether names
+        # actually merge into the trading pipeline.
+        self.discovery = DiscoveryEngine(self.kite, FULL_UNIVERSE)
+        try:
+            self.discovery.seed_candidate_pool()
+        except Exception as e:
+            print(f"[Crew] Discovery pool seed failed (non-fatal): {e}")
+        shadow_marker = "ON" if not getattr(__import__("config.settings", fromlist=["DISCOVERY_ALLOW_TRADES"]),
+                                            "DISCOVERY_ALLOW_TRADES", False) else "OFF"
+        print(f"[Crew] Discovery engine loaded — shadow mode {shadow_marker}")
 
         self._tick   = 0
         self._breadth_cache: dict = {}    # refreshed every ~15 min
@@ -259,6 +274,17 @@ class TradingCrew:
             self.fhh_detector.get_state("NIFTY 50", now)
         except Exception as e:
             print(f"[Crew] phase-1 telemetry poke failed (non-fatal): {e}")
+
+        # Phase 2.1 — Discovery Engine scan. Internally cadence-gated to
+        # DISCOVERY_SCAN_INTERVAL_SEC, so calling every tick is cheap (early
+        # return when not due). Names admitted by `run_scan` flow into
+        # `get_live_universe` consumed by `_scan_market` below, IFF the
+        # DISCOVERY_ALLOW_TRADES flag is True. Until then, shadow mode logs
+        # adds but doesn't feed them to the trading pipeline.
+        try:
+            self.discovery.run_scan(now)
+        except Exception as e:
+            print(f"[Crew] discovery scan failed (non-fatal): {e}")
 
         # 2. Time gate — no new entries in certain windows
         if not self._ok_to_trade(now):
@@ -385,10 +411,18 @@ class TradingCrew:
     # ── Agent 1: Market Scanner ───────────────────────────────────────────────
 
     def _scan_market(self) -> list[str]:
-        print(f"[Scanner] Scanning {len(FULL_UNIVERSE)} stocks...")
+        # Phase 2.1 — merge discovered names into the scanned universe (shadow-
+        # gated by DISCOVERY_ALLOW_TRADES inside `get_live_universe`).
+        universe = self.discovery.get_live_universe(FULL_UNIVERSE)
+        extras = len(universe) - len(FULL_UNIVERSE)
+        if extras > 0:
+            print(f"[Scanner] Scanning {len(universe)} stocks "
+                  f"({len(FULL_UNIVERSE)} core + {extras} discovery)...")
+        else:
+            print(f"[Scanner] Scanning {len(universe)} stocks...")
         try:
             # Batch fetch quotes for all stocks (single round-trip)
-            quotes = self.kite.get_quotes(FULL_UNIVERSE)
+            quotes = self.kite.get_quotes(universe)
             active = []
             for sym, q in quotes.items():
                 chg   = abs(q.get("change_pct", 0))
@@ -404,7 +438,7 @@ class TradingCrew:
             # Sort by absolute change, take top 60
             active.sort(key=lambda x: x[1], reverse=True)
             result = [s[0] for s in active[:60]]
-            print(f"[Scanner] {len(result)} active stocks (of {len(FULL_UNIVERSE)} scanned, "
+            print(f"[Scanner] {len(result)} active stocks (of {len(universe)} scanned, "
                   f"turnover floor ₹{SCAN_MIN_TURNOVER/1e5:.0f}L)")
             return result
         except Exception as e:
@@ -1707,6 +1741,14 @@ class TradingCrew:
 
         status = "closed_win" if total_pnl > 0 else "closed_loss"
         self.state.close_position(p.id, curr, total_pnl, pnl_r, status, reason)
+
+        # Phase 2.1 — report outcome to Discovery Engine so it can
+        # auto-blacklist names that cause repeated losses. No-op for core
+        # universe symbols (handled inside `report_trade_outcome`).
+        try:
+            self.discovery.report_trade_outcome(p.symbol, pnl_r)
+        except Exception as e:
+            print(f"[Discovery] report_trade_outcome failed (non-fatal): {e}")
 
         # Cancel any pending broker-side SL-M before placing the MARKET exit
         # (Fix #6) — prevents the "polling sees SL hit + broker SL-M also fires"

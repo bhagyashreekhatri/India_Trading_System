@@ -349,6 +349,30 @@ CONVICTION_TARGET_INR = {
 # before fully cutting over).
 USE_CONVICTION_ENGINE          = True
 
+
+# ── Phase 2.1 — Discovery Engine (top-mover scanner) ─────────────────────────
+# See docs/19_Discovery_Engine_Spec_2026-05-12.md.
+# Spec evidence: 2026-05-12 JINDRILL +7.81%, OIL India +7.66%, CMSINFO +5.26%
+# were the cleanest movers of the day — all OUTSIDE the 150-stock hardcoded
+# universe. The agent was structurally blind to the highest-conviction longs.
+#
+# Defaults are conservative. SHADOW MODE (DISCOVERY_ALLOW_TRADES=False) keeps
+# the engine running + logging without feeding discovered names to crew.py's
+# trading pipeline. After 3-5 sessions of shadow logs look clean, flip the
+# flag to True for live (still tier-capped at B- inside conviction_engine).
+DISCOVERY_SCAN_INTERVAL_SEC      = 300      # 5 min between scans
+DISCOVERY_FIRST_SCAN_DELAY_MIN   = 15       # skip 09:15-09:30 open auction noise
+DISCOVERY_MIN_PCT_MOVE           = 2.5      # |pct_change| threshold to admit
+DISCOVERY_MIN_VOLUME_RATIO       = 1.5      # today_vol / 20d_avg_vol
+DISCOVERY_MIN_AVG_TURNOVER_INR   = 10e7     # ₹10 crore avg daily turnover
+DISCOVERY_MAX_SPREAD_PCT         = 0.0015   # 0.15% (slightly looser than entry SPREAD_MAX_PCT)
+DISCOVERY_MAX_NEW_ADDS_PER_SCAN  = 5
+DISCOVERY_MAX_TOTAL              = 15       # max live-discovery names at once
+DISCOVERY_MAX_PER_SESSION        = 40       # cumulative session cap
+DISCOVERY_BLACKLIST_LOSS_THRESHOLD = 2      # losses before auto-blacklist
+DISCOVERY_BLACKLIST_DAYS         = 7        # blacklist duration (trading days)
+DISCOVERY_ALLOW_TRADES           = False    # SHADOW MODE — flip to True after validation
+
 # ═══════════════════════════════════════════════════════════════════════════
 # DEPRECATED — to be removed after conviction-engine forward-validation:
 #   SCORE_SIZE_TIERS, HOUR_GATE_NUDGES, MIN_SCORE_*, CONFLUENCE_MULTIPLIER_*,
