@@ -937,8 +937,18 @@ class TradingCrew:
                               f"(conf={conf_n}, sector={sym_sector} not in {top_secs}) — skip")
                         self._rej("momentum_no_priority"); continue
 
-                # News (Groq LLM — this is the ONLY LLM call)
-                has_news, news_score, catalyst, headline = self._get_news(sym)
+                # Fix #185 (2026-05-18) — News enrichment removed from hot path.
+                # `_get_news` was firing per-candidate per-tick, burning Groq quota
+                # and feeding NOTHING actionable downstream (conviction engine
+                # doesn't read these fields; Fix #183 already removed news from
+                # Discovery admits). For Indian small/mid-caps NewsAPI returns
+                # zero articles, for large-caps it returns PyPI package metadata
+                # (e.g. "pkscreener 0.46.20260517.912"). Hardcoding neutral
+                # defaults keeps the scoring object schema stable without the
+                # network round-trip. `_get_news` method + `self.news` field
+                # retained as dead code on disk; can be re-enabled if/when NSE
+                # corporate-announcements feed work happens later.
+                has_news, news_score, catalyst, headline = False, 0.5, "none", ""
 
                 # Quotes for current price (Fix #168 — use per-tick cache)
                 quotes  = self._get_cached_quote(sym)
@@ -1116,12 +1126,24 @@ class TradingCrew:
                 # admits, so `score ≥ MIN_SCORE_ENTRY (7.0)` would kill every
                 # conviction-A admit before _allocate even sees it. Let validity +
                 # proximity decide here; conviction in _allocate decides take/skip.
+                #
+                # Fix #184 (2026-05-18) — Bypass `result.is_valid` ALSO in conviction
+                # mode. The stub sets `is_valid = final_score >= 5.0`
+                # (scoring/engine.py:270). A clean MOMENTUM_BREAKOUT admit with body
+                # ratio 0.41, low volume RS, or "news_sentiment=0.5 neutral" gets
+                # raw_score ~4.5 and is_valid=False — silently killed BEFORE
+                # conviction ever evaluates it. That's the most likely reason zero
+                # entries have fired in shadow mode despite structurally clean
+                # admits being logged. In conviction mode, conviction in _allocate
+                # is the SOLE take/skip authority; we only gate on proximity here
+                # so the existing proximity_failed → pending-retest path still
+                # works.
                 try:
                     from config.settings import USE_CONVICTION_ENGINE as _UCE
                 except ImportError:
                     _UCE = False
                 if _UCE:
-                    will_enter = result.is_valid          # conviction is the gate
+                    will_enter = result.proximity_ok      # conviction in _allocate decides
                 else:
                     will_enter = result.is_valid and comp.final_score >= effective_min
                 # Always log score so we can see what's happening

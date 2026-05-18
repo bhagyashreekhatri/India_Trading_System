@@ -33,6 +33,7 @@ from jobs.eod_job import run_eod_job
 from config.settings import (
     TIMEZONE, SCAN_INTERVAL_MIN, MIN_SCORE_ENTRY,
     MAX_POSITIONS, EOD_CLOSE_TIME, MARKET_OPEN, MARKET_CLOSE,
+    PAPER_TRADING, PROBE_MODE_ENABLED, CAPITAL, PROBE_CAPITAL,
 )
 
 IST          = ZoneInfo(TIMEZONE)
@@ -308,9 +309,53 @@ def run_premarket(crew: TradingCrew):
 
 # ─── Main loop ────────────────────────────────────────────────────────────────
 
+def _assert_safe_mode():
+    """
+    Fix #187 (2026-05-18) — refuse to boot if PAPER_TRADING=False AND
+    PROBE_MODE_ENABLED=False simultaneously.
+
+    Why this matters:
+      Without PROBE_MODE_ENABLED=True, live mode (`PAPER_TRADING=False`)
+      routes real broker orders sized against the full `CAPITAL` (₹15L)
+      rather than `PROBE_CAPITAL` (₹50k) — a 30× risk footgun.
+
+      Fix #161 wired all sizing through `get_active_capital()` /
+      `get_active_max_positions()` helpers (config/settings.py), but
+      that only protects when PROBE_MODE_ENABLED=True. If both flags
+      are False, the system trades real money at 30× intended size.
+
+      Both flags MUST be co-flipped for the go-live procedure (see
+      PROJECT_MEMORY.md "Open / pending" section + go-live playbook).
+      This assertion enforces that contract at boot time.
+    """
+    if not PAPER_TRADING and not PROBE_MODE_ENABLED:
+        msg = (
+            "\n" + "=" * 70 + "\n"
+            "❌ REFUSED TO BOOT — UNSAFE FLAG COMBINATION\n"
+            + "=" * 70 + "\n"
+            f"  PAPER_TRADING        = False  (live broker orders enabled)\n"
+            f"  PROBE_MODE_ENABLED   = False  (sizes against full ₹{CAPITAL/1e5:.1f}L)\n\n"
+            f"  This would risk {CAPITAL/max(PROBE_CAPITAL,1):.0f}× your intended\n"
+            f"  probe size (₹{PROBE_CAPITAL:,}) on every trade.\n\n"
+            "  Fix one of the following:\n"
+            "    (a) Paper test:  set PAPER_TRADING=True in config/settings.py\n"
+            "    (b) Live probe:  set PROBE_MODE_ENABLED=True in config/settings.py\n\n"
+            "  Both flags must be co-flipped for live probe go-live.\n"
+            "  See PROJECT_MEMORY.md Fix #161 + go-live procedure for details.\n"
+            + "=" * 70 + "\n"
+        )
+        print(msg)
+        sys.exit(1)
+
+
 def main():
     # Set up daily log file — must be first
     log_file = setup_logging()
+
+    # Fix #187 — refuse to boot in the unsafe (live, full-capital) mode.
+    # Must fire BEFORE any other init so no DB/Kite/ChromaDB resources
+    # get touched if the configuration is unsafe.
+    _assert_safe_mode()
 
     print("""
 ╔═══════════════════════════════════════════════════╗
@@ -320,6 +365,15 @@ def main():
 ╚═══════════════════════════════════════════════════╝
 """)
 
+    # Surface the active mode + capital so it's the first thing the
+    # operator sees on every boot — no ambiguity about what's running.
+    mode_label = (
+        "📝 PAPER" if PAPER_TRADING
+        else ("🧪 LIVE-PROBE" if PROBE_MODE_ENABLED else "🟥 LIVE-FULL")
+    )
+    active_cap = PROBE_CAPITAL if PROBE_MODE_ENABLED else CAPITAL
+    print(f"   Mode:           {mode_label}")
+    print(f"   Active capital: ₹{active_cap:,}")
     print(f"   Scan interval:  every {SCAN_INTERVAL_MIN} minutes")
     print(f"   Min score:      {MIN_SCORE_ENTRY}")
     print(f"   Max positions:  {MAX_POSITIONS}")

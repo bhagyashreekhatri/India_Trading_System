@@ -256,16 +256,35 @@ class MarketStateAgent:
                 )]
                 # The bar that CLOSES at 10:15 starts at 10:10. Depending on
                 # the broker's bar convention, the timestamp on the row may
-                # be the start (10:10) or the close (10:15). Look for either.
-                ten_fifteen_bar = df_today[df_today["date"].apply(
-                    lambda d: d.time() in (dtime(10, 10), dtime(10, 15))
-                )]
+                # be the start (10:10) or the close (10:15).
+                #
+                # Fix #186 (2026-05-18) — widened from exact-match to a 90-second
+                # window. Kite has been observed to return timestamps with
+                # sub-second drift (10:09:59.xxx instead of clean 10:10:00) and
+                # in rare cases shifts the convention mid-day. Exact in-tuple
+                # match silently misses these and falls through to the DEGRADED
+                # LTP path — the very behavior Fix #176 was meant to eliminate.
+                # The window 10:09:30 ≤ t ≤ 10:15:30 covers both start (10:10)
+                # and close (10:15) conventions with comfortable timestamp drift.
+                # Take the LATEST matching bar to handle the (start, close)
+                # duplicate edge case where the same bar might appear twice.
+                def _is_1015_bar(d):
+                    t = d.time()
+                    return dtime(10, 9, 30) <= t <= dtime(10, 15, 30)
+                ten_fifteen_bar = df_today[df_today["date"].apply(_is_1015_bar)]
                 if len(ten_fifteen_bar) > 0:
-                    close_px = float(ten_fifteen_bar.iloc[0]["close"])
+                    # Fix #186 — if multiple bars matched the widened window
+                    # (e.g. broker returned both start-stamped 10:10 AND
+                    # close-stamped 10:15 row), the LATEST is the actual
+                    # first-hour-close. Sort by date ascending and take last.
+                    ten_fifteen_bar = ten_fifteen_bar.sort_values("date")
+                    bar_row = ten_fifteen_bar.iloc[-1]
+                    close_px = float(bar_row["close"])
                     if close_px > 0:
                         self._first_hour_close_cache[today_iso] = close_px
                         print(f"[MarketState] 10:15 candle close (canonical): "
-                              f"₹{close_px:.2f} from historical_data")
+                              f"₹{close_px:.2f} from historical_data "
+                              f"(bar_ts={bar_row['date'].strftime('%H:%M:%S')})")
                         return close_px
         except Exception as e:
             print(f"[MarketState] historical_data fetch failed, "
