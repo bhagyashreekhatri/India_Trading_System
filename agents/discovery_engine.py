@@ -92,7 +92,7 @@ def _is_non_eq_name(tsym: str) -> bool:
 # (-IT). Target after v3: ~1500-1800 names (≤3 quote chunks → fewer
 # Cloudflare strikes on the /quote endpoint).
 _NON_EQ_SUFFIX_RE = re.compile(
-    r"-(ST|SM|N\d|SG|GS|RT|RR|IV|NG|Y\d|IT|BL|R\d|YL|YB|BC|BE|BZ|MF|ZC|ME|ML)\d*$"
+    r"-(ST|SM|SF|N\d|SG|GS|RT|RR|IV|NG|Y\d|IT|BL|R\d|YL|YB|BC|BE|BZ|MF|ZC|ME|ML)\d*$"
 )
 
 # Real NSE EQ tradingsymbols match this shape:
