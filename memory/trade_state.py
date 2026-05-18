@@ -668,6 +668,34 @@ class TradeStateManager:
             ).fetchone()
         return int(row[0]) if row else 0
 
+    def minutes_since_last_portfolio_loss(self) -> Optional[float]:
+        """
+        Fix #179 (2026-05-18) — portfolio-level revenge brake.
+        Returns minutes since the most recent closed_loss across ANY symbol
+        today, or None if no losses today. Used by crew.py's `_allocate` to
+        impose a cross-symbol cooldown after any stop hit — prevents the
+        tilt pattern of "lost on ABB → chased ICICIBANK → chased HDFC".
+
+        Today-only scope: we don't carry yesterday's pain into today.
+        """
+        today = date.today().isoformat()
+        with self._conn() as conn:
+            row = conn.execute("""
+                SELECT exit_time FROM positions
+                WHERE status='closed_loss'
+                  AND exit_time LIKE ?
+                ORDER BY exit_time DESC LIMIT 1
+            """, (f"{today}%",)).fetchone()
+        if not row or not row["exit_time"]:
+            return None
+        try:
+            exit_dt = _to_ist(row["exit_time"])
+            if exit_dt is None:
+                return None
+            return (datetime.now(IST) - exit_dt).total_seconds() / 60.0
+        except Exception:
+            return None
+
     def is_in_cooldown(self, symbol: str, cooldown_minutes: int = 30,
                        after_loss_minutes: int | None = None,
                        after_win_minutes:  int | None = None) -> bool:

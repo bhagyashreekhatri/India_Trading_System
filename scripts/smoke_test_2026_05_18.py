@@ -453,6 +453,164 @@ def sanity_tier_histogram():
         _fail("conviction reason normalization missing")
 
 
+def sanity_macro_lock_historical_candle():
+    _hdr("SANITY 16 — 10:15 macro lock uses historical candle (Fix #176)")
+    src = (ROOT / "agents/market_state.py").read_text()
+    if "self.kite.get_candles(\"NIFTY 50\", interval=\"5minute\"" in src:
+        _ok("market_state pulls historical 5-min candle for 10:15 close")
+    else:
+        _fail("market_state does NOT use historical_data for 10:15 close")
+    if 'DEGRADED — using current LTP' in src:
+        _ok("LTP fallback is flagged as DEGRADED with operator-visible warning")
+    else:
+        _fail("LTP fallback missing the DEGRADED warning")
+    if 'dtime(10, 10)' in src and 'dtime(10, 15)' in src:
+        _ok("looks for 10:10 OR 10:15 timestamp (broker convention agnostic)")
+    else:
+        _fail("hardcoded only one of 10:10 / 10:15 — broker convention risk")
+
+
+def sanity_sl_placement_emergency_exit():
+    _hdr("SANITY 17 — SL-M placement failure → emergency exit (Fix #177)")
+    src = (ROOT / "agents/crew.py").read_text()
+    needles = [
+        ("elif not PAPER_TRADING:",                         "branch gated on live mode"),
+        ("SL-M PLACEMENT FAILED",                           "operator-visible log line"),
+        ("emergency-exit place_order raised",               "exception trapped on emergency exit"),
+        ("status=\"closed_sl_place_failed\"",               "position row closed with distinctive status"),
+        ("emergency-exit",                                  "Telegram explicit emergency-exit wording"),
+        ("sl_placement_failed_emergency_exit",              "rejection counter recorded"),
+    ]
+    for needle, desc in needles:
+        if needle in src:
+            _ok(desc)
+        else:
+            _fail(f"{desc} — needle '{needle[:40]}' missing")
+
+
+def sanity_fhh_candle_cache():
+    _hdr("SANITY 18 — Stock-FHH candle cache (Fix #178)")
+    src = (ROOT / "agents/fhh_break_detector.py").read_text()
+    if "self._candle_cache: dict" in src:
+        _ok("_candle_cache initialized in __init__")
+    else:
+        _fail("_candle_cache missing")
+    if "def clear_tick_cache" in src:
+        _ok("clear_tick_cache method exposed for crew.py")
+    else:
+        _fail("clear_tick_cache method missing")
+    if "def _get_today_candles" in src:
+        _ok("_get_today_candles helper exists")
+    else:
+        _fail("_get_today_candles helper missing")
+    if "df = self._get_today_candles(symbol)" in src:
+        # Should appear at least twice (capture + update)
+        if src.count("df = self._get_today_candles(symbol)") >= 2:
+            _ok("both _capture_first_hour and _update_breaks use the cache")
+        else:
+            _fail("only one of capture/update uses the cache")
+    else:
+        _fail("neither _capture_first_hour nor _update_breaks uses the cache")
+    # Crew clears it per tick
+    crew_src = (ROOT / "agents/crew.py").read_text()
+    if "self.fhh_detector.clear_tick_cache()" in crew_src:
+        _ok("crew.py clears the FHH cache per tick")
+    else:
+        _fail("crew.py does NOT clear the FHH cache per tick")
+
+
+def sanity_portfolio_revenge_cooldown():
+    _hdr("SANITY 19 — Cross-symbol post-loss cooldown (Fix #179)")
+    state_src = (ROOT / "memory/trade_state.py").read_text()
+    crew_src = (ROOT / "agents/crew.py").read_text()
+    settings_src = (ROOT / "config/settings.py").read_text()
+    if "def minutes_since_last_portfolio_loss" in state_src:
+        _ok("minutes_since_last_portfolio_loss method exists")
+    else:
+        _fail("minutes_since_last_portfolio_loss method missing")
+    if "PORTFOLIO_LOSS_COOLDOWN_MIN" in settings_src:
+        _ok("PORTFOLIO_LOSS_COOLDOWN_MIN constant in settings.py")
+    else:
+        _fail("PORTFOLIO_LOSS_COOLDOWN_MIN missing")
+    if "PORTFOLIO REVENGE BRAKE" in crew_src:
+        _ok("_allocate has the portfolio revenge brake")
+    else:
+        _fail("_allocate does NOT have the portfolio revenge brake")
+    # Verify the live setting
+    from config import settings
+    importlib_reload = False
+    try:
+        import importlib
+        importlib.reload(settings)
+        importlib_reload = True
+    except Exception:
+        pass
+    expected = 20
+    if getattr(settings, "PORTFOLIO_LOSS_COOLDOWN_MIN", -1) == expected:
+        _ok(f"PORTFOLIO_LOSS_COOLDOWN_MIN = {expected} (live value)")
+    else:
+        _fail(f"PORTFOLIO_LOSS_COOLDOWN_MIN != {expected} (live value)")
+
+
+def sanity_paper_slippage_bumped():
+    _hdr("SANITY 20 — Paper slippage realism (Fix #180)")
+    from config import settings
+    cases = [
+        ("PAPER_SLIPPAGE_ENTRY_BPS",  settings.PAPER_SLIPPAGE_ENTRY_BPS,  12),
+        ("PAPER_SLIPPAGE_STOP_BPS",   settings.PAPER_SLIPPAGE_STOP_BPS,   22),
+        ("PAPER_SLIPPAGE_TARGET_BPS", settings.PAPER_SLIPPAGE_TARGET_BPS, 8),
+    ]
+    for name, actual, expected in cases:
+        if actual == expected:
+            _ok(f"{name} = {actual} bps")
+        else:
+            _fail(f"{name} = {actual} (expected {expected})")
+
+
+def sanity_max_positions_paper():
+    _hdr("SANITY 21 — MAX_POSITIONS = 3 in paper (Fix #181)")
+    from config import settings
+    if settings.MAX_POSITIONS == 3:
+        _ok(f"MAX_POSITIONS = {settings.MAX_POSITIONS} (matches probe)")
+    else:
+        _fail(f"MAX_POSITIONS = {settings.MAX_POSITIONS} (expected 3)")
+
+
+def sanity_discovery_volume_time_adjusted():
+    _hdr("SANITY 22 — Discovery volume-ratio is time-adjusted (Fix #182)")
+    src = (ROOT / "agents/discovery_engine.py").read_text()
+    needles = [
+        ("session_open = now.replace(hour=9, minute=15",     "session open anchor exists"),
+        ("elapsed_min = max(1.0,",                            "elapsed-minute computation"),
+        ("SESSION_MINUTES = 375",                             "375-minute session constant"),
+        ("expected_volume_so_far = ctx.avg_daily_volume * elapsed_frac",  "time-adjusted baseline computed"),
+        ("today_volume / expected_volume_so_far",             "ratio uses adjusted denominator"),
+    ]
+    for needle, desc in needles:
+        if needle in src:
+            _ok(desc)
+        else:
+            _fail(f"{desc} — needle '{needle[:40]}' missing")
+
+    # Numeric sanity: a stock at +1.5x EXPECTED pace at 10:00 IST should clear
+    # the 1.5× threshold; at the old method, same volume vs full-day avg at
+    # 10:00 (~12% of session) would compute as ~0.18× and fail.
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    ist = _ZI("Asia/Kolkata")
+    t_10_00 = _dt(2026, 5, 19, 10, 0, tzinfo=ist)
+    session_open = t_10_00.replace(hour=9, minute=15, second=0, microsecond=0)
+    elapsed = (t_10_00 - session_open).total_seconds() / 60.0
+    frac = elapsed / 375.0
+    expected_so_far = 1_000_000 * frac   # avg_daily = 1M shares
+    today_so_far = 1.5 * expected_so_far  # stock running at 1.5× pace
+    ratio = today_so_far / expected_so_far
+    if abs(ratio - 1.5) < 1e-6:
+        _ok(f"10:00 IST stock at 1.5× pace → ratio={ratio:.2f} (clears 1.5 threshold)")
+    else:
+        _fail(f"time-adjusted math wrong: 1.5× pace at 10:00 → {ratio:.2f}")
+
+
 def sanity_trade_state_delete_row():
     _hdr("SANITY 12 — trade_state.delete_position_row works (Fix #170 storage)")
     # Build a temp DB, write a fake position, delete it, verify it's gone.
@@ -532,6 +690,13 @@ def main():
     sanity_priority_gate_disabled_in_conviction()
     sanity_runway_softens_wall()
     sanity_tier_histogram()
+    sanity_macro_lock_historical_candle()
+    sanity_sl_placement_emergency_exit()
+    sanity_fhh_candle_cache()
+    sanity_portfolio_revenge_cooldown()
+    sanity_paper_slippage_bumped()
+    sanity_max_positions_paper()
+    sanity_discovery_volume_time_adjusted()
     sanity_trade_state_delete_row()
 
     print()

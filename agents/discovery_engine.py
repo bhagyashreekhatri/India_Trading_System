@@ -592,8 +592,25 @@ class DiscoveryEngine:
             # Successful fetch — cache it and persist to disk.
             self._daily_context[sym] = ctx
             self._save_daily_context()
+        # Fix #182 (2026-05-18) — time-adjusted volume ratio.
+        # OLD (dimensionally wrong): today_volume (cumulative AT NOW) compared
+        # against a 20-day FULL-DAY average. At 10:00 IST, today has ~45 min
+        # of volume vs 6.25-hour daily avg — every stock under-volumed. At
+        # 14:30 IST the opposite. Result: zero morning admits, flood of late-
+        # day admits (FCL +19.97% at 14:30 is exactly this artefact).
+        # NEW: scale denominator by elapsed session fraction so 1.5× means
+        # "running at 150% of expected pace at this point in the session."
         today_volume = q.get("volume", 0)
-        volume_ratio = today_volume / ctx.avg_daily_volume if ctx.avg_daily_volume > 0 else 0.0
+        session_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+        elapsed_min = max(1.0, (now - session_open).total_seconds() / 60.0)
+        # NSE intraday session 09:15-15:30 = 375 minutes
+        SESSION_MINUTES = 375.0
+        # Cap fraction at 1.0 — never inflate the expected baseline beyond a
+        # full session (post-close discovery runs would otherwise pass anyone).
+        elapsed_frac = min(elapsed_min / SESSION_MINUTES, 1.0)
+        expected_volume_so_far = ctx.avg_daily_volume * elapsed_frac
+        volume_ratio = (today_volume / expected_volume_so_far
+                        if expected_volume_so_far > 0 else 0.0)
         if volume_ratio < self.s.DISCOVERY_MIN_VOLUME_RATIO:
             return None
 

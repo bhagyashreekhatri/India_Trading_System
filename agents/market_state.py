@@ -223,25 +223,69 @@ class MarketStateAgent:
         """
         Return the 10:15 IST close (the first-hour close).
 
-        Once locked in, never re-fetches — that's the entire point of the rule.
-        The 10:15 reading IS the morning institutional positioning consensus.
-        Continuously polling LTP afterwards is noise.
+        Fix #176 (2026-05-18) — CRITICAL semantics correction.
+        Previous behaviour: LTP-at-first-call after 10:15. On 3-min tick cadence
+        that landed somewhere 10:15-10:18 and on a process restart at 14:30
+        captured 14:30 LTP as "the 10:15 reading." The whole 30-month research
+        (n=584) was sampled on the 10:15 5-min CANDLE CLOSE — a different
+        statistical input than runtime LTP. Live precision claims (98%/72%/etc.)
+        don't transfer to live unless the live read matches the sampled read.
+
+        New behaviour: fetch the 10:10-10:15 5-min candle close via
+        `kite.historical_data`. This is the EXACT bar the research sampled.
+        Cache by date, fall back to LTP only if historical fetch fails (degraded
+        mode — same as old behaviour, but flagged so we know precision is
+        compromised on this session).
+
+        Once locked in, never re-fetches — that's the entire point.
         """
         if today_iso in self._first_hour_close_cache:
             return self._first_hour_close_cache[today_iso]
 
-        # We're past 10:15 but haven't cached yet. Fetch LTP — this captures
-        # whatever the price is now (which will be close to the 10:15 print
-        # if we're calling shortly after 10:15).
+        # Try the canonical path first: 5-min candle close at 10:15.
+        try:
+            df = self.kite.get_candles("NIFTY 50", interval="5minute", days=3)
+            if df is not None and len(df) > 0:
+                # Normalise tz, filter to today, look for the 10:10-10:15 bar.
+                df_today = df.copy()
+                df_today["date"] = df_today["date"].apply(
+                    lambda d: d.replace(tzinfo=IST) if d.tzinfo is None else d
+                )
+                df_today = df_today[df_today["date"].apply(
+                    lambda d: d.date().isoformat() == today_iso
+                )]
+                # The bar that CLOSES at 10:15 starts at 10:10. Depending on
+                # the broker's bar convention, the timestamp on the row may
+                # be the start (10:10) or the close (10:15). Look for either.
+                ten_fifteen_bar = df_today[df_today["date"].apply(
+                    lambda d: d.time() in (dtime(10, 10), dtime(10, 15))
+                )]
+                if len(ten_fifteen_bar) > 0:
+                    close_px = float(ten_fifteen_bar.iloc[0]["close"])
+                    if close_px > 0:
+                        self._first_hour_close_cache[today_iso] = close_px
+                        print(f"[MarketState] 10:15 candle close (canonical): "
+                              f"₹{close_px:.2f} from historical_data")
+                        return close_px
+        except Exception as e:
+            print(f"[MarketState] historical_data fetch failed, "
+                  f"falling back to LTP (degraded): {e}")
+
+        # Fallback (degraded mode): we're past 10:15 but couldn't get the
+        # canonical candle close. Use current LTP and flag the session.
+        # This preserves pre-Fix-#176 behaviour as a safety net rather than
+        # blocking the system entirely.
         try:
             quotes = self.kite.get_quotes(["NIFTY 50"])
             ltp = quotes.get("NIFTY 50", {}).get("last_price", 0.0)
             if ltp > 0:
-                # Lock in for the rest of the day.
                 self._first_hour_close_cache[today_iso] = ltp
+                print(f"[MarketState] ⚠️ DEGRADED — using current LTP ₹{ltp:.2f} "
+                      f"as 10:15 reference (historical_data unavailable). "
+                      f"Precision claims do NOT apply this session.")
             return ltp
         except Exception as e:
-            print(f"[MarketState] NIFTY LTP fetch error: {e}")
+            print(f"[MarketState] NIFTY fallback LTP also failed: {e}")
             return None
 
 

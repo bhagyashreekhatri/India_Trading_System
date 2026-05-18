@@ -314,6 +314,12 @@ class TradingCrew:
         self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
         self._quote_cache.clear()  # Fix #168 — fresh per-tick quote cache
         self._tier_hist.clear()    # Fix #175 — fresh conviction-tier histogram
+        # Fix #178 — clear stock-FHH candle cache so each tick gets fresh
+        # 5-min bars (FHH state itself persists per symbol+date).
+        try:
+            self.fhh_detector.clear_tick_cache()
+        except AttributeError:
+            pass  # older detector without clear_tick_cache
         self._entries_this_tick = 0  # Phase 2.0 B6 — count actual entries, not scorer passes
         now = _now_ist()
         print(f"\n{'='*60}")
@@ -1354,6 +1360,28 @@ class TradingCrew:
                   f"Manual reset required to resume.")
             return
 
+        # ── Fix #179 (2026-05-18) — Portfolio-level post-loss cooldown ──────
+        # Per-symbol cooldown protects against re-entering the loser. It does
+        # NOT protect against the tilt pattern of chasing the next obvious
+        # name. After any closed_loss today across the portfolio, block ALL
+        # new entries (any symbol) for PORTFOLIO_LOSS_COOLDOWN_MIN minutes.
+        # The -2.5% kill switch is the backstop; this is the intermediate
+        # brake. Set PORTFOLIO_LOSS_COOLDOWN_MIN=0 to disable.
+        try:
+            from config.settings import PORTFOLIO_LOSS_COOLDOWN_MIN as _PLC
+        except ImportError:
+            _PLC = 0
+        if _PLC > 0:
+            mins_since_loss = self.state.minutes_since_last_portfolio_loss()
+            if mins_since_loss is not None and mins_since_loss < _PLC:
+                remaining = _PLC - mins_since_loss
+                print(f"[Allocator] 🛑 PORTFOLIO REVENGE BRAKE — "
+                      f"last loss {mins_since_loss:.0f}m ago, "
+                      f"cooldown {_PLC}m, {remaining:.0f}m remaining. "
+                      f"All new entries blocked across symbols.")
+                self._rej("portfolio_revenge_cooldown")
+                return
+
         # ── Tighten gate at +2R (Fix #11) — ride existing winners only ───────
         # Filter scored candidates to A+/A++ (≥8.0) once today_pnl crosses +2%.
         # Fix #160 (2026-05-18): in conviction mode, conviction_tier isn't
@@ -1732,6 +1760,54 @@ class TradingCrew:
             if sl_oid:
                 self.state.update_sl_order_id(pos_id, sl_oid)
                 print(f"[Allocator] 🛑 SL-M placed {sym} trigger={s['stop_loss']} id={sl_oid}")
+            elif not PAPER_TRADING:
+                # Fix #177 (2026-05-18) — CRITICAL pre-live safety.
+                # Entry filled but SL-M placement failed (broker timeout, margin
+                # pinch on the protective order, symbol frozen on stop side,
+                # SEBI surveillance flip mid-session, etc.). Without this branch
+                # the position lives with no broker-side stop. Market gaps
+                # against us → full exposure instead of the -1R we sized for.
+                # Action: immediate market exit on the just-entered position,
+                # close the row as `sl_place_failed`, Telegram-alert the
+                # operator so the failure is visible within seconds.
+                print(f"[Allocator] 🆘 SL-M PLACEMENT FAILED for {sym} — "
+                      f"firing immediate market exit to avoid unprotected position")
+                exit_tx = "SELL" if s.get("direction", "long") == "long" else "BUY"
+                exit_order_id = None
+                try:
+                    exit_order_id = self.kite.place_order(sym, exit_tx, qty)
+                except Exception as _xe:
+                    print(f"[Allocator] 🆘 emergency-exit place_order raised: {_xe}")
+                # Compute realised P&L using the entry fill price as best-effort
+                # exit reference. The real fill price will reconcile via the
+                # broker; this row's pnl is a placeholder.
+                try:
+                    self.state.close_position(
+                        pos_id,
+                        exit_price=s["entry_price"],
+                        pnl=0.0,
+                        pnl_r=0.0,
+                        status="closed_sl_place_failed",
+                        exit_reason="sl_m_placement_failed_emergency_exit",
+                    )
+                except Exception as _ce:
+                    print(f"[Allocator] 🆘 close_position after emergency exit failed: {_ce}")
+                # Telegram — operator must see this immediately
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🆘 <b>SL-M PLACEMENT FAILED — emergency exit</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔴 {sym} {tx} {qty} entered @ ₹{s['entry_price']:.2f}\n"
+                        f"❌ Protective SL-M order rejected by broker.\n"
+                        f"⚡ Fired market exit (order id: {exit_order_id or 'NONE — VERIFY MANUALLY'})\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"CHECK BROKER ACCOUNT NOW — position may still be open."
+                    )
+                except Exception:
+                    pass
+                self._rej("sl_placement_failed_emergency_exit")
+                continue
 
             # Telegram entry alert
             try:

@@ -25,7 +25,13 @@ CHROMA_PERSIST_DIR  = os.getenv("CHROMA_PERSIST_DIR", "./chroma_store")
 # ─── Trading parameters ───────────────────────────────────────────────────────
 PAPER_TRADING           = True
 CAPITAL                 = 1_500_000
-MAX_POSITIONS           = 10              # raised for paper trading (was 5)
+# Fix #181 (2026-05-18) — dropped 10 → 3 to match PROBE_MAX_POSITIONS.
+# Reasoning: paper validates a 10-position concurrency the operator will never
+# run. Probe is capped at 3. Paper at 10 generates "I was full so I skipped
+# admits" behaviour that won't exist live. Aligning the regimes so paper
+# metrics describe the system that will actually trade. A solo scalper aiming
+# ₹1-3k/trade cannot monitor 10 names anyway.
+MAX_POSITIONS           = 3               # paper now matches probe concurrency
 MAX_SECTOR_EXPOSURE     = 0.30
 RISK_PER_TRADE_PCT      = 0.01            # 1% of capital per trade
 MAX_POSITION_VALUE_PCT  = 0.10            # 10% per trade (₹1.5L at ₹15L) — fits 10 positions in capital
@@ -238,9 +244,27 @@ TICK_SIZE               = 0.05
 # position or stop-fill drag. These bps figures simulate that to keep paper
 # results honest and ready us for live. Skipped automatically when
 # PAPER_TRADING=False (real broker provides real slippage).
-PAPER_SLIPPAGE_ENTRY_BPS  = 5    # 0.05% — entry filled slightly worse than LTP
-PAPER_SLIPPAGE_STOP_BPS   = 10   # 0.10% — stops fill worse (gap risk + market order)
-PAPER_SLIPPAGE_TARGET_BPS = 3    # 0.03% — targets fill near LTP (limit order)
+# Fix #180 (2026-05-18) — bumped 5/10/3 → 12/22/8 bps after brutal scalper review.
+# Reasoning: Discovery surfaces mid-caps (JINDRILL/AMBER/FCL/ARVIND class).
+# Real NSE bid-ask on these is 8-15 bps at top-of-book, 20-50 bps on SL fills
+# under momentum. Old values were modelling RELIANCE/INFY, not the names we
+# actually trade. Paper P&L was overstated by 10-25 bps per round trip,
+# meaning paper "+₹3.50 booked" → live "+₹2.00" — paper looked profitable
+# while live edge was 35% smaller. Pre-live: paper must converge toward live
+# reality, so this gets WORSE not better before flag flip. Re-run 5 paper
+# sessions and reconfirm metrics before PAPER_TRADING=False.
+# Fix #179 (2026-05-18) — cross-symbol post-loss cooldown ("revenge brake").
+# Per-symbol cooldown (45m loss / 15m win) protects against re-entering the
+# loser. It does NOT protect against the tilt pattern of chasing the NEXT
+# obvious name after a loss. This portfolio-level cooldown blocks ALL new
+# entries (any symbol) for N minutes after any closed_loss today. The kill-
+# switch at -2.5% capital is the backstop; this is the intermediate brake.
+# Set to 0 to disable.
+PORTFOLIO_LOSS_COOLDOWN_MIN = 20
+
+PAPER_SLIPPAGE_ENTRY_BPS  = 12   # 0.12% — realistic mid-cap entry slip
+PAPER_SLIPPAGE_STOP_BPS   = 22   # 0.22% — momentum SL fills slip hardest
+PAPER_SLIPPAGE_TARGET_BPS = 8    # 0.08% — limit orders, lighter than entry/stop
 
 # ─── Spread filter (Fix #43 / P1) ────────────────────────────────────────────
 # Hard reject if bid-ask spread exceeds this %. Wide spreads silently destroy

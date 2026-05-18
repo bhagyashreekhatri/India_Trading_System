@@ -94,6 +94,38 @@ class FhhBreakDetector:
     def __init__(self, kite):
         self.kite = kite
         self._states: dict[tuple[str, str], FirstHourState] = {}  # (symbol, date) → state
+        # Fix #178 (2026-05-18) — tick-scoped candle cache. Without this,
+        # _capture_first_hour + _update_breaks each fire a fresh
+        # kite.get_candles per symbol per evaluation. On a 60-symbol scan
+        # with multiple conviction evaluations, that's hundreds of historical-
+        # data calls per session — Kite limit is 3 req/s, Discovery already
+        # had Cloudflare blocks. The `except Exception` here would fail-closed
+        # to "stock_fhh_not_set" SKIP silently, killing our best setups
+        # precisely when tape is busiest. crew.py clears this dict at the
+        # top of each tick (matches _quote_cache pattern).
+        self._candle_cache: dict[str, "pd.DataFrame"] = {}
+
+    def clear_tick_cache(self) -> None:
+        """Called by crew.py at top of each run_tick — invalidate per-tick state."""
+        self._candle_cache.clear()
+
+    def _get_today_candles(self, symbol: str) -> Optional["pd.DataFrame"]:
+        """Fetch today's 5-min candles, using the tick cache when available.
+        Returns None if fetch failed; caller treats as transient retry-next-tick."""
+        cached = self._candle_cache.get(symbol)
+        if cached is not None:
+            return cached
+        try:
+            df = self.kite.get_candles(symbol, interval="5minute", days=3)
+            if df is None or len(df) == 0:
+                return None
+            self._candle_cache[symbol] = df
+            return df
+        except Exception as e:
+            # Don't cache failures — let next tick retry. But surface the
+            # error so we know if Kite is throttling us silently.
+            print(f"[FhhDetector] get_candles failed for {symbol}: {e}")
+            return None
 
     def get_state(self, symbol: str, now: Optional[datetime] = None) -> FirstHourState:
         """Return current FirstHourState for `symbol`. Computes on first call,
@@ -133,9 +165,10 @@ class FhhBreakDetector:
     def _capture_first_hour(
         self, state: FirstHourState, symbol: str, today_iso: str, now: datetime
     ) -> None:
-        """Fetch the 09:15-10:15 5-minute candles and compute FHH/FHL/close."""
+        """Fetch the 09:15-10:15 5-minute candles and compute FHH/FHL/close.
+        Fix #178 — uses tick-scoped cache via _get_today_candles."""
         try:
-            df = self.kite.get_candles(symbol, interval="5minute", days=3)
+            df = self._get_today_candles(symbol)
             if df is None or len(df) == 0:
                 return
             df = self.kite.get_today_bars(df) if hasattr(self.kite, "get_today_bars") else df
@@ -165,12 +198,13 @@ class FhhBreakDetector:
     def _update_breaks(
         self, state: FirstHourState, symbol: str, now: datetime
     ) -> None:
-        """Check if any post-10:15 bars have broken FHH or FHL."""
+        """Check if any post-10:15 bars have broken FHH or FHL.
+        Fix #178 — uses tick-scoped cache via _get_today_candles."""
         if state.high_broken and state.low_broken:
             return  # nothing more to track
 
         try:
-            df = self.kite.get_candles(symbol, interval="5minute", days=1)
+            df = self._get_today_candles(symbol)
             if df is None or len(df) == 0:
                 return
             df["date"] = df["date"].apply(lambda d: d.replace(tzinfo=IST) if d.tzinfo is None else d)
