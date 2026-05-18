@@ -49,6 +49,8 @@ _NON_EQ_NAME_RE = re.compile(
 )
 
 DEFAULT_BLACKLIST_PATH = "discovery_blacklist.json"
+DEFAULT_DAILY_CTX_PATH = "discovery_daily_ctx.json"
+DEFAULT_ADMITS_LOG_PATH = "discovery_admits.jsonl"   # append-only audit trail
 
 
 def _str(v) -> str:
@@ -112,12 +114,22 @@ class DiscoveryEngine:
         core_universe: list[str],
         settings_module=None,
         blacklist_path: str = DEFAULT_BLACKLIST_PATH,
+        daily_ctx_path: str = DEFAULT_DAILY_CTX_PATH,
+        admits_log_path: str = DEFAULT_ADMITS_LOG_PATH,
     ):
         self.kite = kite
         # `core_universe` is the existing 150-stock hardcoded list. We use it
         # to filter out names that are already covered.
         self.core_universe = set(core_universe)
         self.blacklist_path = blacklist_path
+        self.daily_ctx_path = daily_ctx_path
+        self.admits_log_path = admits_log_path
+
+        # Injected by crew.py after construction. Phase 2.1.2 — when present,
+        # each admit is enriched with a NewsAPI+Groq catalyst headline on a
+        # cold path (best-effort, never blocks scan). Default None so unit
+        # tests don't need to mock the news client.
+        self.news_client = None
 
         # Lazy-load settings so test code can pass a stub module.
         if settings_module is None:
@@ -127,7 +139,10 @@ class DiscoveryEngine:
 
         # State
         self._candidate_pool: list[str] = []
+        # Daily context is now persisted to disk keyed by (symbol, date) so it
+        # survives restarts and Kite rate-limit pauses. Loaded at boot.
         self._daily_context: dict[str, _DailyContext] = {}
+        self._daily_context_date: Optional[str] = None    # ISO date of cached data
         self._discovered_today: dict[str, DiscoveryCandidate] = {}
         self._blacklist: dict[str, str] = {}   # symbol → ISO date when expires
         self._loss_counter: dict[str, int] = {}
@@ -135,8 +150,13 @@ class DiscoveryEngine:
         self._scans_this_session: int = 0
         self._adds_this_session: int = 0
         self._session_iso: Optional[str] = None
+        # Phase 2.1.1 — per-scan budget so a fresh boot doesn't fire 100+
+        # daily-history fetches in seconds and trip Kite's 10 req/s rate limit.
+        # Reset at the start of every scan.
+        self._ctx_fetches_this_scan: int = 0
 
         self._load_blacklist()
+        self._load_daily_context()
 
     # ── Pool seeding ─────────────────────────────────────────────────────────
 
@@ -291,6 +311,11 @@ class DiscoveryEngine:
                 f"({cand.reason})"
             )
 
+            # Phase 2.1.2 — cold-path news enrichment + audit log.
+            # Best-effort: if NewsClient unreachable / Groq 429 / etc, we log
+            # the admit without catalyst rather than block the scan.
+            self._enrich_and_log_admit(cand)
+
         # Prune stale entries (price cooled back inside ±1% with low volume).
         self._prune_stale(now)
 
@@ -354,6 +379,11 @@ class DiscoveryEngine:
         """
         survivors: list[DiscoveryCandidate] = []
 
+        # Reset per-scan call budget so each scan gets a fresh allowance
+        # for new daily-history fetches (cap is DISCOVERY_MAX_NEW_CONTEXT_
+        # FETCHES_PER_SCAN, default 10).
+        self._ctx_fetches_this_scan = 0
+
         # Filter out symbols we've already admitted today (don't re-admit)
         # or that are blacklisted.
         pool = [
@@ -403,14 +433,25 @@ class DiscoveryEngine:
 
         # Filter #2 — volume confirmation
         # We use today's reported volume / 20d avg daily volume as proxy.
-        # The daily_context cache is populated lazily on first need (avoids
-        # a 600-name daily history pull at boot, which would be slow).
+        # Cache lookup first — populated lazily on first need from
+        # _load_symbol_context. Cache persists across restarts (disk-backed).
         ctx = self._daily_context.get(sym)
-        if ctx is None:
+        if ctx is None or ctx.avg_daily_volume <= 0:
+            # Respect per-scan call budget (avoid rate-limit on first scan)
+            budget = getattr(self.s, "DISCOVERY_MAX_NEW_CONTEXT_FETCHES_PER_SCAN", 10)
+            if self._ctx_fetches_this_scan >= budget:
+                # Defer this candidate to next scan. Don't pollute the cache
+                # with a failed empty result — let the symbol retry next time.
+                return None
+            self._ctx_fetches_this_scan += 1
             ctx = self._load_symbol_context(sym)
+            if ctx.avg_daily_volume <= 0:
+                # Fetch failed (Kite rate limit, no history, etc.) — do NOT
+                # cache the empty result. Symbol gets another shot next scan.
+                return None
+            # Successful fetch — cache it and persist to disk.
             self._daily_context[sym] = ctx
-        if ctx.avg_daily_volume <= 0:
-            return None
+            self._save_daily_context()
         today_volume = q.get("volume", 0)
         volume_ratio = today_volume / ctx.avg_daily_volume if ctx.avg_daily_volume > 0 else 0.0
         if volume_ratio < self.s.DISCOVERY_MIN_VOLUME_RATIO:
@@ -570,3 +611,119 @@ class DiscoveryEngine:
                 json.dump(self._blacklist, fh, indent=2, sort_keys=True)
         except Exception as e:
             print(f"[Discovery] blacklist save failed: {e}")
+
+    # ── Daily-context persistence (Phase 2.1.1 rate-limit fix) ───────────────
+    # 20-day avg volume / turnover changes once per day. We persist it to
+    # disk so a restart doesn't trigger a 100+ Kite call storm. File format:
+    #   { "date": "2026-05-18", "ctx": { "SYMBOL": {avg_vol, avg_turn}, ... } }
+    # If the on-disk date matches today, we load it. Otherwise we treat it
+    # as stale (yesterday's volumes are close enough but let's be precise)
+    # and start fresh; the per-scan budget protects us from a storm.
+
+    def _load_daily_context(self) -> None:
+        if not os.path.exists(self.daily_ctx_path):
+            return
+        try:
+            with open(self.daily_ctx_path) as fh:
+                payload = json.load(fh)
+            disk_date = payload.get("date", "")
+            from datetime import date as _date
+            today_iso = _date.today().isoformat()
+            if disk_date != today_iso:
+                # Stale — yesterday's context. Keep it loaded as a sane
+                # starting estimate; will be overwritten as today's fetches
+                # land. Avoids a full storm even on a stale cache file.
+                self._daily_context_date = disk_date
+            else:
+                self._daily_context_date = today_iso
+            for sym, fields in payload.get("ctx", {}).items():
+                self._daily_context[sym] = _DailyContext(
+                    avg_daily_volume=float(fields.get("avg_vol", 0)),
+                    avg_daily_turnover=float(fields.get("avg_turn", 0)),
+                )
+            print(f"[Discovery] daily context cache: {len(self._daily_context)} "
+                  f"symbols loaded ({'today' if self._daily_context_date == today_iso else 'stale: ' + (disk_date or 'unknown')})")
+        except Exception as e:
+            print(f"[Discovery] daily_context load failed (non-fatal): {e}")
+            self._daily_context = {}
+
+    def _save_daily_context(self) -> None:
+        try:
+            from datetime import date as _date
+            payload = {
+                "date": _date.today().isoformat(),
+                "ctx": {
+                    sym: {
+                        "avg_vol":  ctx.avg_daily_volume,
+                        "avg_turn": ctx.avg_daily_turnover,
+                    }
+                    for sym, ctx in self._daily_context.items()
+                    if ctx.avg_daily_volume > 0    # never persist failed fetches
+                },
+            }
+            with open(self.daily_ctx_path, "w") as fh:
+                json.dump(payload, fh)
+        except Exception as e:
+            print(f"[Discovery] daily_context save failed (non-fatal): {e}")
+
+    # ── Cold-path news enrichment + admit audit log ──────────────────────────
+
+    def _enrich_and_log_admit(self, cand: DiscoveryCandidate) -> None:
+        """
+        Fire NewsAPI+Groq catalyst lookup for the newly-admitted candidate
+        (cold path — never blocks the scan). Logs [DiscoveryNews] line and
+        appends a JSONL record to discovery_admits.jsonl for offline
+        recurring-pattern analysis.
+
+        Why this matters: 2026-05-12 and 2026-05-18 both had JINDRILL +7-8%
+        as the top discovery candidate. Same name, same direction, two weeks
+        apart. The hypothesis is "oil services riding a crude rally" — but
+        we should let the data tell us, not assume. NewsClient's daily cache
+        means at most one Groq call per (symbol, day).
+        """
+        headline = ""
+        sentiment = 0.5
+        catalyst_type = ""
+
+        nc = self.news_client
+        if nc is not None:
+            try:
+                news = nc.get_news_for_symbol(cand.symbol)
+                if news and getattr(news, "has_news", False):
+                    headline = getattr(news, "headline", "") or ""
+                    sentiment = float(getattr(news, "sentiment", 0.5) or 0.5)
+                    catalyst_type = getattr(news, "catalyst_type", "") or ""
+                    print(
+                        f"[DiscoveryNews] {cand.symbol}: "
+                        f"\"{headline[:80]}{'...' if len(headline) > 80 else ''}\"  "
+                        f"sentiment={sentiment:.2f}  catalyst={catalyst_type or 'unknown'}"
+                    )
+            except Exception as e:
+                print(f"[DiscoveryNews] {cand.symbol} enrich failed (non-fatal): "
+                      f"{type(e).__name__}: {e}")
+
+        # Append audit-log entry regardless of news availability so we can
+        # mine the JSONL later for recurring patterns even if NewsAPI was
+        # rate-limited.
+        try:
+            from datetime import datetime as _dt
+            rec = {
+                "ts": _dt.now().isoformat(),
+                "symbol": cand.symbol,
+                "pct_change": cand.pct_change,
+                "volume_ratio": cand.volume_ratio,
+                "turnover_inr": cand.avg_turnover_inr,
+                "spread_pct": cand.spread_pct,
+                "score": cand.score,
+                "direction": cand.direction_bias,
+                "headline": headline,
+                "sentiment": sentiment,
+                "catalyst_type": catalyst_type,
+                "reason": cand.reason,
+            }
+            with open(self.admits_log_path, "a") as fh:
+                fh.write(json.dumps(rec) + "\n")
+        except Exception as e:
+            # Audit-log failure should never break a scan — but log it once
+            # so we know to fix the disk path / permissions.
+            print(f"[Discovery] admits_log write failed (non-fatal): {e}")

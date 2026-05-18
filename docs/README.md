@@ -27,6 +27,7 @@ The single-source-of-truth fix log lives at `../PROJECT_MEMORY.md`. The docs in 
 | 11 | [`21_Stock_Decoupling_Spec_2026-05-12.md`](21_Stock_Decoupling_Spec_2026-05-12.md) | Phase 2.3 — Per-stock decoupling rule. Catches ONGC-class single-stock catalysts on macro-RED days. Replaces doc 20 after METAL sector head-fake evidence. | **Implemented + shadow** |
 | 12 | [`22_Runway_Check_Spec_2026-05-12.md`](22_Runway_Check_Spec_2026-05-12.md) | Phase 2.6 — Setup-aware time-to-target runway check. Replaces the blunt `NO_NEW_ENTRY_AFTER` clock rule with empirical `median_TTP1 × safety_factor ≤ remaining_minutes`. Final removal of clock categories from entry path. | **Spec only — pending impl** |
 | 13 | [`23_Phase3_Live_Probe_Operations_2026-05-12.md`](23_Phase3_Live_Probe_Operations_2026-05-12.md) | **Phase 3 operations playbook**. Pre-flight gates (12), capital tranching (₹50k → ₹3L → ₹20L), kill switches, daily/weekly/monthly ops checklists, success/failure criteria for moving to Phase 4. | **Spec ready; pre-flight gates pending forward observation** |
+| 14 | [`24_Mid_Trade_Reeval_Spec_2026-05-18.md`](24_Mid_Trade_Reeval_Spec_2026-05-18.md) | Phase 2.7 — Re-checks the entry thesis (macro / VWAP / HOD-proximity) every 5 min per open position. Action ladder: 2/3 broken → TIGHTEN_TO_BE, 3/3 → CLOSE at market. Catches the "got in clean, market changed under me" loss class. | **Implemented + shadow** |
 
 ## Reference docs (older context)
 
@@ -80,6 +81,7 @@ Numbers (01, 04, 05x2, 07-18) reflect chronological order of analyses, not logic
 | Phase 2.3 — Stock-level decoupling rule | doc 21 | ✅ IMPLEMENTED (shadow mode, awaiting deploy) |
 | Phase 2.5 — Hygiene cleanup ([LegacyRegime] tag, midday-lull log removed) | — | 🚀 READY to deploy |
 | Phase 2.6 — Runway check (replaces NO_NEW_ENTRY_AFTER clock rule) | doc 22 | ✅ IMPLEMENTED (shadow mode default; 8/8 acceptance tests pass) |
+| Phase 2.7 — Mid-trade structural re-evaluation | doc 24 | ✅ IMPLEMENTED (shadow mode default; 10/10 acceptance tests pass) |
 | Phase 2 — Forward validation (5-15 sessions) | doc 17 | ⏳ STARTS TOMORROW |
 | Phase 3.0.1 — Weekly/Monthly safety nets (settings constants) | — | ✅ ADDED 2026-05-12 — wiring into crew.py pending |
 | Phase 3 — ₹50k live probe operations spec + probe-mode settings | doc 23 | 📝 SPEC + settings ready; pre-flight gates pending |

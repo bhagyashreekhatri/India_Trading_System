@@ -198,6 +198,20 @@ class ConvictionEngine:
                             f"[Decoupling] {symbol} ADMIT-{marker} on macro "
                             f"{macro_snap.state} — {dec_res.reason}"
                         )
+                        # Phase 2.9 — audit record for dashboard shadow tab
+                        try:
+                            from tools.shadow_log import record_shadow_event
+                            record_shadow_event("decoupling_admit", {
+                                "symbol": symbol, "marker": marker,
+                                "macro_state": macro_snap.state,
+                                "stock_pct": dec_res.stock_pct,
+                                "volume_ratio": dec_res.volume_ratio,
+                                "sector_pct": dec_res.sector_pct,
+                                "pull_from_hod_pct": dec_res.pull_from_hod_pct,
+                                "reason": dec_res.reason,
+                            }, "decoupling_shadow.jsonl")
+                        except Exception:
+                            pass
                         if STOCK_DECOUPLING_ENABLED:
                             # Build a tier-B-equivalent result with half-size.
                             from config.settings import CONVICTION_RISK_INR, CONVICTION_TARGET_INR

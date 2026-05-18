@@ -187,12 +187,14 @@ class TradingCrew:
         from agents.day_type_classifier import DayTypeClassifier
         from tools.volatility_state import VolatilityStateAgent
         from agents.discovery_engine import DiscoveryEngine
+        from agents.mid_trade_reeval import MidTradeReeval
 
         self.market_state  = MarketStateAgent(self.kite)
         self.fhh_detector  = FhhBreakDetector(self.kite)
         self.day_type      = DayTypeClassifier(self.kite)        # Phase 1.5
         self.vol_state     = VolatilityStateAgent(self.kite)     # Phase 1.6/1.7
         self.conviction    = ConvictionEngine(self.market_state, self.fhh_detector)
+        self.reeval        = MidTradeReeval(self.market_state)   # Phase 2.7
         # Inject the new agents into conviction so it can read them
         self.conviction.day_type = self.day_type
         self.conviction.vol_state = self.vol_state
@@ -206,6 +208,9 @@ class TradingCrew:
         # Shadow mode default — DISCOVERY_ALLOW_TRADES gates whether names
         # actually merge into the trading pipeline.
         self.discovery = DiscoveryEngine(self.kite, FULL_UNIVERSE)
+        # Phase 2.1.2 — inject news client so admits get enriched with the
+        # catalyst headline on a cold path. Best-effort; failure is non-fatal.
+        self.discovery.news_client = self.news
         try:
             self.discovery.seed_candidate_pool()
         except Exception as e:
@@ -788,6 +793,34 @@ class TradingCrew:
                         and vol_ratio < MOMENTUM_BO_MIN_RVOL):
                     print(f"[Scorer] {sym} momentum_breakout RVOL={vol_ratio:.2f} "
                           f"< {MOMENTUM_BO_MIN_RVOL} — fakeout risk, skip")
+                    # Phase 2.8 — log rejection as ghost trade so the offline
+                    # analyzer can compute the would-be P&L per RVOL bucket.
+                    # Lets us tune the threshold from real data instead of
+                    # asserting 2.0 is right.
+                    try:
+                        from tools.rvol_ghost import record_rejection as _ghost
+                        # Pull macro state if available (best-effort)
+                        macro_lbl = ""
+                        try:
+                            macro_lbl = self.market_state.get_state().state
+                        except Exception:
+                            pass
+                        _ghost(
+                            symbol=sym,
+                            rvol=vol_ratio,
+                            rvol_floor=MOMENTUM_BO_MIN_RVOL,
+                            entry_price=s.get("entry_price", 0.0),
+                            stop_loss=s.get("stop_loss", 0.0),
+                            tp1_price=s.get("tp1_price", 0.0),
+                            tp2_price=s.get("tp2_price", 0.0),
+                            direction=s.get("direction", "long"),
+                            setup_type=setup_type,
+                            macro_state=macro_lbl,
+                            score=s.get("final_score", 0.0),
+                        )
+                    except Exception as _e:
+                        # Best-effort; never break the rejection flow
+                        pass
                     self._rej("momentum_low_volume"); continue
 
                 # ── Fix #56 / Phase A — momentum priority filter ────────────
@@ -1667,6 +1700,104 @@ class TradingCrew:
                             del self._pre_tp1_first_seen[p.id]
                 except Exception as _e:
                     pass
+
+            # ── Mid-trade structural re-evaluation (Phase 2.7) ──────────────
+            # At most once every MID_TRADE_REEVAL_INTERVAL_MIN per position,
+            # re-check the 3-dim thesis (macro / VWAP / HOD-proximity).
+            # Shadow-mode default — logs [Reeval] lines without acting until
+            # MID_TRADE_REEVAL_ENABLED=True.
+            try:
+                from config.settings import (
+                    MID_TRADE_REEVAL_ENABLED,
+                    MID_TRADE_REEVAL_LOG_SHADOW,
+                )
+                if (MID_TRADE_REEVAL_ENABLED or MID_TRADE_REEVAL_LOG_SHADOW) \
+                        and self.reeval.should_check(p.id, now):
+                    # Compute VWAP — try the per-tick cache first; fall back
+                    # to a fresh fetch+compute for symbols not in cache.
+                    vwap = self._vwap_cache.get(p.symbol, 0.0)
+                    if vwap <= 0:
+                        try:
+                            df = self.kite.get_candles(p.symbol, interval="5minute", days=1)
+                            if df is not None and len(df) > 0:
+                                df_today = self.kite._filter_to_today(df) if hasattr(self.kite, "_filter_to_today") else df
+                                if df_today is not None and len(df_today) > 0:
+                                    vwap_series = self.kite.calculate_vwap(df_today)
+                                    if vwap_series is not None and len(vwap_series) > 0:
+                                        vwap = float(vwap_series.iloc[-1])
+                        except Exception:
+                            vwap = 0.0
+
+                    rr = self.reeval.evaluate(p, quotes.get(p.symbol, {"last_price": curr}), vwap, now)
+
+                    if rr.action == "CONTINUE":
+                        pass   # no log — only fires on transitions
+                    elif rr.action == "TIGHTEN_TO_BE":
+                        marker = "ENABLED" if MID_TRADE_REEVAL_ENABLED else "SHADOW"
+                        print(f"[Reeval] {p.symbol} TIGHTEN-{marker} — "
+                              f"macro={rr.macro_state} ltp={rr.ltp:.2f} vwap={rr.vwap:.2f} "
+                              f"pull-from-HOD={rr.pull_from_hod_pct:.2f}% — {rr.reason}")
+                        # Phase 2.9 — audit record for dashboard shadow tab
+                        try:
+                            from tools.shadow_log import record_shadow_event
+                            record_shadow_event("reeval_tighten", {
+                                "symbol": p.symbol, "marker": marker,
+                                "macro_state": rr.macro_state,
+                                "ltp": rr.ltp, "vwap": rr.vwap,
+                                "pull_from_hod_pct": rr.pull_from_hod_pct,
+                                "broken_dims": rr.broken_dims,
+                                "broken_count": rr.broken_count,
+                                "entry_price": p.entry_price,
+                                "current_sl": p.stop_loss,
+                                "reason": rr.reason,
+                            }, "reeval_shadow.jsonl")
+                        except Exception:
+                            pass
+                        if MID_TRADE_REEVAL_ENABLED and p.stop_loss < p.entry_price:
+                            new_sl = round(p.entry_price, 2)
+                            self.state.update_stop_loss(p.id, new_sl)
+                            p.stop_loss = new_sl
+                            # Best-effort SL-M replacement in live mode
+                            try:
+                                if not PAPER_TRADING and getattr(p, "sl_order_id", None):
+                                    self.kite.cancel_order(p.sl_order_id)
+                                    new_oid = self.kite.place_sl_order(
+                                        symbol=p.symbol,
+                                        quantity=p.quantity_remaining,
+                                        trigger_price=new_sl,
+                                        direction=p.direction,
+                                    )
+                                    if new_oid:
+                                        self.state.update_sl_order_id(p.id, new_oid)
+                            except Exception as _e:
+                                print(f"[Reeval] SL-M replacement failed on {p.symbol}: {_e}")
+                    elif rr.action == "CLOSE":
+                        marker = "ENABLED" if MID_TRADE_REEVAL_ENABLED else "SHADOW"
+                        print(f"[Reeval] {p.symbol} CLOSE-{marker} — "
+                              f"macro={rr.macro_state} ltp={rr.ltp:.2f} vwap={rr.vwap:.2f} "
+                              f"pull-from-HOD={rr.pull_from_hod_pct:.2f}% — {rr.reason}")
+                        try:
+                            from tools.shadow_log import record_shadow_event
+                            record_shadow_event("reeval_close", {
+                                "symbol": p.symbol, "marker": marker,
+                                "macro_state": rr.macro_state,
+                                "ltp": rr.ltp, "vwap": rr.vwap,
+                                "pull_from_hod_pct": rr.pull_from_hod_pct,
+                                "broken_dims": rr.broken_dims,
+                                "broken_count": rr.broken_count,
+                                "entry_price": p.entry_price,
+                                "reason": rr.reason,
+                            }, "reeval_shadow.jsonl")
+                        except Exception:
+                            pass
+                        if MID_TRADE_REEVAL_ENABLED:
+                            self._full_exit(p, curr, "thesis_invalidated")
+                            # drop from re-eval state (position is closing)
+                            self.reeval.drop_position(p.id)
+                            continue
+            except Exception as _e:
+                # Re-eval is best-effort — never break position management
+                print(f"[Reeval] {p.symbol} evaluator error (non-fatal): {_e}")
 
             # ── Stall detection — tiered (Fix #32 / B5) ──────────────────────
             # Tier 1 (early): 25 min + pnl_r ∈ [-0.5, +0.3] → exit (no momentum

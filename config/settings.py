@@ -418,6 +418,28 @@ DISCOVERY_MAX_PER_SESSION        = 40       # cumulative session cap
 DISCOVERY_BLACKLIST_LOSS_THRESHOLD = 2      # losses before auto-blacklist
 DISCOVERY_BLACKLIST_DAYS         = 7        # blacklist duration (trading days)
 DISCOVERY_ALLOW_TRADES           = False    # SHADOW MODE — flip to True after validation
+DISCOVERY_MAX_NEW_CONTEXT_FETCHES_PER_SCAN = 10  # rate-limit guard: max Kite get_candles calls per scan
+                                                  # (daily-context cache is persisted to disk so subsequent
+                                                  #  scans skip already-seen symbols)
+
+
+# ── Phase 2.7 — Mid-Trade Structural Re-evaluation ──────────────────────────
+# See docs/24_Mid_Trade_Reeval_Spec_2026-05-18.md and agents/mid_trade_reeval.py
+#
+# Every MID_TRADE_REEVAL_INTERVAL_MIN per open position, re-check the 3-dim
+# entry thesis (macro state / above-VWAP / HOD-proximity). Action ladder:
+#   • 0-1 broken → CONTINUE  (existing SL/TP/trail manages)
+#   • 2 broken   → TIGHTEN_TO_BE  (move SL to entry_price)
+#   • 3 broken   → CLOSE at market with reason "thesis_invalidated"
+#
+# Catches the "got in clean, market changed under me" loss class. Default OFF
+# via MID_TRADE_REEVAL_ENABLED. Shadow logs via MID_TRADE_REEVAL_LOG_SHADOW.
+MID_TRADE_REEVAL_ENABLED       = False    # SHADOW MODE — log only initially
+MID_TRADE_REEVAL_LOG_SHADOW    = True     # emit [Reeval] lines anyway
+MID_TRADE_REEVAL_INTERVAL_MIN  = 5        # re-check at most once per N min per position
+MID_TRADE_HOD_RELAX_PCT        = 0.015    # 1.5% (relaxed from entry's 0.5%)
+MID_TRADE_TIGHTEN_AT_BROKEN    = 2        # 2/3 dims broken → tighten SL to BE
+MID_TRADE_CLOSE_AT_BROKEN      = 3        # 3/3 dims broken → close at market
 
 
 # ── Phase 2.3 — Stock-level decoupling rule ──────────────────────────────────
