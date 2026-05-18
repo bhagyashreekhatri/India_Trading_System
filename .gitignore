@@ -49,3 +49,17 @@ logs/
 system_controls.json
 system_status.json
 news_cache.json
+
+# ── Phase 2.1-2.9 runtime audit logs (one JSONL per shadow-mode module) ─────
+# These accumulate per-session and feed the dashboard Shadow tab + offline
+# analyzers (e.g. scripts/rvol_backtest.py). Server-managed — never commit.
+discovery_admits.jsonl
+discovery_daily_ctx.json
+discovery_blacklist.json
+rvol_ghost.jsonl
+reeval_shadow.jsonl
+decoupling_shadow.jsonl
+pending_retest.jsonl
+
+# Generated backtest reports (re-run with `python3 scripts/rvol_backtest.py`)
+docs/rvol_backtest_report.md

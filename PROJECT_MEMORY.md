@@ -1,6 +1,6 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-05-12 ~17:00 IST | Operator: Bhagya*
-*Recent activity: Phase 2.0-3.0.1 shipped today after 30-month NIFTY analysis confirmed Phase 0 + 1 rebuild.*
+*Last updated: 2026-05-18 ~11:30 IST | Operator: Bhagya*
+*Recent activity: Phase 2.1 hardening (3 fixes) + Phase 2.7/2.8/2.9 shadow-validation infrastructure shipped today. Discovery now seeds ~1500 names properly; news catalyst attribution + mid-trade re-evaluation + RVOL ghost telemetry + dashboard Shadow tab all wired in shadow mode.*
 
 ---
 
@@ -385,14 +385,38 @@ If any of those three is "no" — the code isn't ready.
 | 73 | **Weekly drawdown kill** (-7.5% of CAPITAL → block entries + Telegram alert) + **Boot-time consecutive-losing-days pause** (5 losing days → block until manual reset) + **Monthly negative-R review** (last trading day → flag for retrospective, no auto-pause). Three new queries on TradeStateManager: `get_week_pnl()`, `get_consecutive_losing_days()`, `get_month_avg_r()` | `memory/trade_state.py`, `agents/crew.py`, `jobs/eod_job.py`, `config/settings.py` (WEEKLY_LOSS_KILL_PCT=0.075, CONSECUTIVE_LOSING_DAYS_PAUSE=5, MONTHLY_NEG_R_REVIEW=True) | 10/10 acceptance tests |
 | 74 | **Probe-mode settings + helpers** (Phase 3 go-live prep). `PROBE_MODE_ENABLED` flag (default False) + `PROBE_CAPITAL=50_000` + scaled risk table (S/A=₹500, B=₹250) + helper functions `get_active_capital()` / `get_active_max_positions()` / `get_active_conviction_risk()` / `get_active_conviction_target()`. Footgun-prevention: flipping `PAPER_TRADING=False` alone would route real orders at paper-sized (₹15L) risk — must also flip `PROBE_MODE_ENABLED=True` | `config/settings.py` | settings constant verification |
 
+### Phase 2.1 hardening + Phase 2.7-2.9 (shipped 2026-05-18)
+
+Live-day observation surfaced a critical Discovery bug + opportunities for the next layer of validation infrastructure.
+
+| # | What changed | Files | Validation |
+|---|---|---|---|
+| 75 | **Discovery field-name bug fix** — boot log showed `seeded candidate pool — 0 NSE EQ names` despite 9,780 instruments loading. Root cause: filter checked `series == "EQ"` but Kite's bulk `instruments(exchange)` SDK call returns `instrument_type` (EQ/FUT/CE/PE), NOT `series` (which is only in `search_instruments` responses). Swapped to correct field name. Pool now seeds ~1,500 NSE EQ names | `agents/discovery_engine.py`, test mock updated | 13/13 acceptance tests still pass; diagnostic counter `non-EQ-type=9780→~8200` confirms fix |
+| 76 | **Discovery persistent daily-context + per-scan rate-limit budget** — three rate-limit hazards fixed: (a) `_daily_context` cache was per-session in-memory, wiped on restart → re-fetched 100+ daily-history endpoints on every boot; (b) failed Kite fetches were cached as empty `_DailyContext()`, permanently rejecting the symbol for the session; (c) no per-scan call budget → cold boot could fire 100+ calls in seconds, tripping Kite's 10 req/s limit. New: persist to `discovery_daily_ctx.json` keyed by symbol+date, never cache empty results, `DISCOVERY_MAX_NEW_CONTEXT_FETCHES_PER_SCAN=10` setting | `agents/discovery_engine.py`, `config/settings.py` | acceptance tests pass; sample log line confirms `daily context cache: N symbols loaded (today)` at boot |
+| 77 | **Discovery news catalyst attribution** — when DiscoveryEngine admits a name, fire `NewsClient.get_news_for_symbol()` on a cold path (best-effort, never blocks scan). Logs `[DiscoveryNews] SYMBOL: "headline" sentiment=X catalyst=Y` second line + appends full admit + news to `discovery_admits.jsonl`. Builds the recurring-catalyst dataset (e.g. JINDRILL ran +7.81% on 2026-05-12 and +8.59% on 2026-05-18 — likely same crude/oil-services catalyst). Failure modes handled: Groq 429, NewsAPI timeout, etc. | `agents/discovery_engine.py`, `agents/crew.py` | E2E stub test verified [DiscoveryNews] emits + JSONL appends correctly |
+| 78 | **Phase 2.7 — Mid-Trade Structural Re-evaluation** — new `agents/mid_trade_reeval.py`. Every `MID_TRADE_REEVAL_INTERVAL_MIN` (default 5) per open position, re-checks 3 thesis dimensions: macro state (allows long?), VWAP (LTP ≥ today's VWAP?), HOD-proximity (LTP within 1.5% of intraday high?). Action ladder: 0-1 broken=CONTINUE, 2=TIGHTEN_TO_BE (move SL to entry), 3=CLOSE at market. Catches the "got in clean, market changed under me" loss class. **Shadow mode default** via `MID_TRADE_REEVAL_ENABLED=False`. See doc 24 | `agents/mid_trade_reeval.py`, `agents/crew.py`, `config/settings.py` (6 constants) | 10/10 acceptance tests pass |
+| 79 | **Phase 2.8 — RVOL ghost-trade telemetry** — new `tools/rvol_ghost.py`. When the scorer rejects a `momentum_breakout` setup for RVOL < 2.0 (Fix #22/Fix #56), append a structured record to `rvol_ghost.jsonl` with symbol, RVOL, would-be entry/SL/TP1, direction, macro state. Best-effort writes — never breaks rejection flow. Anecdotally the 2.0 floor saves more losses than it misses wins (ABB@1.96 closed -0.92%, ONGC@1.93 closed +5.93% on 2026-05-12), but no structured dataset existed. Now we get one | `tools/rvol_ghost.py`, `agents/crew.py` | unit test: 2 records written + read back correctly; bucket distribution test passes |
+| 80 | **Phase 2.8 — RVOL backtest analyzer** — new `scripts/rvol_backtest.py`. Reads `rvol_ghost.jsonl`, for each rejection pulls 5-min candles from Kite, walks forward bar-by-bar to determine outcome (TP1 hit / SL hit / EOD pnl_r), buckets by RVOL (`[0.5-1.0)`, `[1.0-1.5)`, `[1.5-1.7)`, `[1.7-2.0)`, `[2.0-2.5)`, `[2.5+]`), produces win-rate + mean R per bucket, recommends `MOMENTUM_BO_MIN_RVOL` threshold based on lowest bucket with n≥5 AND positive mean-R. After 2-3 weeks of accumulated data, this replaces "we think 2.0 might be too tight" with empirical evidence | `scripts/rvol_backtest.py` | bucket-labeling tests pass; analyzer ready to run once data accumulates |
+| 81 | **Phase 2.9 — `tools/shadow_log.py` helper** — single `record_shadow_event(event_type, data, path)` function. Used by `agents/crew.py` (Reeval TIGHTEN-SHADOW / CLOSE-SHADOW events → `reeval_shadow.jsonl`) and `agents/conviction_engine.py` (Decoupling ADMIT-SHADOW events → `decoupling_shadow.jsonl`). Same JSONL pattern as `discovery_admits.jsonl` and `rvol_ghost.jsonl`. Best-effort writes — never breaks the caller | `tools/shadow_log.py`, `agents/crew.py`, `agents/conviction_engine.py` | unit test confirms structured records write correctly |
+| 82 | **Phase 2.9 — Shadow Mode dashboard tab** — new 4th tab in Streamlit dashboard. Reads all 4 shadow JSONL files and renders: (1) 🔍 Discovery Admits table with catalyst headlines, (2) 🎯 Decoupling would-admit table, (3) 🔄 Re-eval TIGHTEN/CLOSE events table, (4) 📉 RVOL Ghost Rejections with bucket histogram + table. Top metrics row shows count-per-file. "Show today only" checkbox to filter. Lets us scan "what did the agent NEARLY do today?" without grepping journalctl | `dashboard/shadow_tab.py`, `dashboard/app.py` | AST clean; sample JSONL data renders correctly |
+
 ### Open / pending after this work
 
-- **DISCOVERY_ALLOW_TRADES = False** (shadow) — flip after 3-5 sessions of clean shadow logs
-- **STOCK_DECOUPLING_ENABLED = False** (shadow) — flip after 3-5 sessions
-- **RUNWAY_CHECK_ENABLED = False** (shadow, logs admit-shadow / would-skip lines) — flip after 2 sessions
+Shadow flags (all default False — flip after observed data validates):
+- **DISCOVERY_ALLOW_TRADES = False** — flip after 3-5 sessions of clean shadow logs in the Shadow tab
+- **STOCK_DECOUPLING_ENABLED = False** — flip after 3-5 sessions
+- **RUNWAY_CHECK_ENABLED = False** (logs admit-shadow / would-skip lines) — flip after 2 sessions
+- **MID_TRADE_REEVAL_ENABLED = False** — flip after 3-5 sessions of `[Reeval]` shadow logs (only fires when positions exist)
 - **PAPER_TRADING = True** + **PROBE_MODE_ENABLED = False** — flip both simultaneously at Phase 3 start (target: ~3 weeks out)
-- **B1 (hardcoded sector-priority filter)** + **B7 (RVOL 2.0 threshold)** — KEEP for now (saved a loss on 2026-05-12); empirical back-test deferred to Phase 3.x
+
+Empirical questions waiting on data:
+- **B1 (hardcoded sector-priority filter)** — KEEP for now; needs 30-month back-test using existing trade_state schema
+- **B7 (RVOL 2.0 threshold)** — KEEP for now; **`scripts/rvol_backtest.py` will give a data-driven answer** after 2-3 weeks of `rvol_ghost.jsonl` accumulation
+
+Cleanup deferrals (cosmetic):
 - **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only
+- **PROJECT_MEMORY Fix #75-#82** — ✅ ADDED above (this entry self-completes)
+- **Move Discovery scan to jobs/discovery_cron.py** — would clean up inline-in-crew.py structure but no behavior change
 
 ### Doc index after this work
 
@@ -409,6 +433,17 @@ If any of those three is "no" — the code isn't ready.
 - **doc 21: Stock decoupling spec (Phase 2.3)**
 - **doc 22: Runway check spec (Phase 2.6)**
 - **doc 23: Phase 3 live probe operations playbook**
+- **doc 24: Mid-trade re-evaluation spec (Phase 2.7)**
+
+### JSONL audit files generated at runtime
+
+These accumulate across sessions and feed the dashboard Shadow tab + offline analyzers:
+- `discovery_admits.jsonl` — one row per Discovery admit, with catalyst headline (Phase 2.1.2)
+- `discovery_daily_ctx.json` — per-symbol 20-day avg volume / turnover cache (Phase 2.1.1)
+- `discovery_blacklist.json` — auto-blacklisted Discovery names (Phase 2.1)
+- `rvol_ghost.jsonl` — one row per RVOL rejection (Phase 2.8)
+- `reeval_shadow.jsonl` — one row per Reeval TIGHTEN/CLOSE event (Phase 2.9)
+- `decoupling_shadow.jsonl` — one row per Decoupling ADMIT-SHADOW event (Phase 2.9)
 
 ---
 
