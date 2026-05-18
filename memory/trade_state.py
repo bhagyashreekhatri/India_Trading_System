@@ -231,6 +231,21 @@ class TradeStateManager:
         with self._conn() as conn:
             conn.execute("UPDATE positions SET stop_loss=? WHERE id=?", (new_sl, position_id))
 
+    def delete_position_row(self, position_id: int):
+        """
+        Fix #170 (2026-05-18): hard-delete a position row that was just
+        opened but whose broker entry order was rejected (place_order
+        returned None). Without this, the row stays in `positions` with
+        status='open' forever — a phantom position the engine thinks it
+        holds but the broker has no record of.
+
+        ONLY use for rollback at order-rejection time, BEFORE any partial
+        fills / TP1 / SL events. For normal closes, use `close_position`
+        (which updates status='closed_*' for historical analytics).
+        """
+        with self._conn() as conn:
+            conn.execute("DELETE FROM positions WHERE id=? AND status='open'", (position_id,))
+
     def update_sl_order_id(self, position_id: int, order_id: str):
         """Persist the active broker-side SL-M order id (Fix #6)."""
         with self._conn() as conn:

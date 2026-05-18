@@ -482,7 +482,12 @@ class DiscoveryEngine:
         #     still comfortably inside the 3-min tick interval.
         #   • The 2-consecutive-empty abort still applies as a safety net.
         CHUNK = 150
-        SLEEP_BETWEEN_CHUNKS_SEC = 0.6
+        # Fix #169 (2026-05-18): tightened 0.6s → 0.3s. v5 with 0.6s was
+        # comfortable but spent ~10s of pure sleep per scan (17 chunks).
+        # Kite call itself takes ~80ms for 150 symbols, so 0.3s gap is still
+        # 4× the actual request duration — should stay well under CF's
+        # burst-detection threshold. Saves ~5s per scan, freeing the tick.
+        SLEEP_BETWEEN_CHUNKS_SEC = 0.3
         nifty_change = self._get_nifty_change_pct()
 
         consecutive_empty = 0

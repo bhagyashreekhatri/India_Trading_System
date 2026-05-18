@@ -429,9 +429,10 @@ crew.py tick path that were silently nuking conviction-engine admits.
 - 🟡 `_score_signals` does 4-7 Kite quote calls per candidate per tick — race-prone, slow. Should cache `self._quote_cache` for the duration of a tick.
 - 🟡 `conviction_engine.py:220` sizing math `0.5 * dec_res.size_multiplier * 2` cancels itself; works by coincidence. Should be `0.5 * dec_res.size_multiplier`.
 - 🟡 `place_order` returns `None` on broker reject without exit-path recheck → state can write "closed" when order didn't actually exit.
-- 🟢 `_is_midday()` still survives; leaks `"midday_mode"` to dashboard status JSON (Three-Laws Law-3 violation).
-- 🟢 14 stale constants in `settings.py` from Phase 0.5 (HOUR_GATE_NUDGES, MIN_SCORE_ENTRY_CONSERVATIVE, CONFLUENCE_MULTIPLIER_2/3, etc.) — defined but never read.
-- 🟢 `tools/pattern_tools.py` still has 1500+ LOC of unused detectors with `_detect_orb_breakout`'s hardcoded 09:30-10:30 IST gate — dead-code Three-Laws violation surface.
+- ✅ `_is_midday()` DELETED (Fix #165). `"midday_mode"` key removed from status JSON. Dashboard updated to drop the "midday lull" override-reason path.
+- ✅ `HOUR_GATE_NUDGES` dict DELETED from `settings.py` and import removed from `crew.py` (Fix #165). Tombstone comment retained for archaeology.
+- ✅ Dormant detectors in `tools/pattern_tools.py` (`_detect_orb_breakout`, `_detect_failed_breakdown`, `_detect_trend_pullback`, `_detect_inside_bar_break`) wrapped in a prominent "DO NOT CALL FROM PRODUCTION PATHS" banner header (Fix #165). Zero callers in production code — verified via grep. Function bodies retained as helpers for a future "conditional re-arm on GREEN macro days" work item; clock-gate inside `_detect_orb_breakout` must be removed before re-arming.
+- 🟢 13 OTHER stale constants in `settings.py` from Phase 0.5 (`MIN_SCORE_ENTRY_CONSERVATIVE`, `CONFLUENCE_MULTIPLIER_2/3`, etc.) — defined but never read. Deferred (cosmetic; Phase 1.8).
 
 ### Open / pending after this work
 

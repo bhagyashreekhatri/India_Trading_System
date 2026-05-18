@@ -228,6 +228,17 @@ class TradingCrew:
         # _detect_breadth so breadth uses real VWAP (Fix #8) instead of the
         # change_pct proxy. Cleared at the start of every tick.
         self._vwap_cache: dict[str, float] = {}
+        # Fix #168 (2026-05-18) — per-tick quote cache. Populated by
+        # _scan_market from its existing batch fetch; read by every downstream
+        # consumer (setup detection, volume/RS, scoring, conviction). Replaces
+        # 4 single-symbol get_quotes([sym]) calls per candidate per tick —
+        # ~300 Kite calls/tick → ~3 calls/tick. Also closes a real race:
+        # conviction reading quote X while allocator reads quote Y for the
+        # same symbol seconds apart.
+        # NOTE: the 3 explicit "fresh at order time" reads (allocator entry,
+        # TP1 fire, full exit) intentionally bypass the cache — they need a
+        # live LTP at the moment of order placement.
+        self._quote_cache: dict[str, dict] = {}
         # Fix #39 — per-tick rejection counters (which gate killed each candidate).
         # Cleared at the start of every tick; printed at end.
         self._reject_counts: dict[str, int] = {}
@@ -296,6 +307,7 @@ class TradingCrew:
         self._tick += 1
         self._vwap_cache.clear()   # Fix #8 — fresh VWAPs per tick
         self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
+        self._quote_cache.clear()  # Fix #168 — fresh per-tick quote cache
         self._entries_this_tick = 0  # Phase 2.0 B6 — count actual entries, not scorer passes
         now = _now_ist()
         print(f"\n{'='*60}")
@@ -473,6 +485,10 @@ class TradingCrew:
         try:
             # Batch fetch quotes for all stocks (single round-trip)
             quotes = self.kite.get_quotes(universe)
+            # Fix #168 — populate per-tick quote cache from this same batch
+            # so downstream consumers (setup detection, volume/RS, scoring,
+            # conviction) don't fire individual get_quotes([sym]) calls.
+            self._quote_cache.update(quotes)
             active = []
             for sym, q in quotes.items():
                 chg   = abs(q.get("change_pct", 0))
@@ -502,6 +518,32 @@ class TradingCrew:
         priority = [s for s in symbols if get_sector(s) in top_sectors]
         rest     = [s for s in symbols if s not in priority]
         return priority + rest
+
+    # ── Fix #168 — per-tick quote cache helper ───────────────────────────────
+    def _get_cached_quote(self, sym: str) -> dict:
+        """
+        Return the per-tick cached quote for `sym`. Cache is populated by
+        `_scan_market` from the universe-wide batch fetch. Cache MISSES fall
+        through to a fresh single-symbol fetch and are written back so
+        subsequent reads within the same tick stay free.
+
+        Use ONLY for setup detection / scoring / conviction reads. The 3
+        order-fire paths (allocator entry refetch, TP1 fire, full exit) must
+        keep their direct `self.kite.get_quotes([sym])` for moment-of-order
+        freshness.
+        """
+        q = self._quote_cache.get(sym)
+        if q is not None:
+            return {sym: q}
+        # Miss — fetch and backfill.
+        try:
+            fresh = self.kite.get_quotes([sym]) or {}
+        except Exception as e:
+            print(f"[Cache] miss-fetch failed for {sym}: {e}")
+            return {}
+        if sym in fresh:
+            self._quote_cache[sym] = fresh[sym]
+        return fresh
 
     # ── Agent 2: Regime Detector ─────────────────────────────────────────────
 
@@ -626,7 +668,8 @@ class TradingCrew:
                 if vwap:
                     self._vwap_cache[sym] = vwap
 
-                quotes   = self.kite.get_quotes([sym])
+                # Fix #168 — use per-tick cache (populated by _scan_market)
+                quotes   = self._get_cached_quote(sym)
                 curr     = quotes.get(sym, {}).get("last_price", 0.0)
 
                 last = df.iloc[-1]
@@ -673,7 +716,8 @@ class TradingCrew:
         try:
             ratio     = self.kite.get_volume_ratio(sym) or 0.0
             spread    = self.kite.get_spread_pct(sym)
-            quotes    = self.kite.get_quotes([sym])
+            # Fix #168 — use per-tick cache
+            quotes    = self._get_cached_quote(sym)
             stock_chg = quotes.get(sym, {}).get("change_pct", 0.0)
             delta     = round(stock_chg - nifty_chg, 3)
 
@@ -846,8 +890,8 @@ class TradingCrew:
                 # News (Groq LLM — this is the ONLY LLM call)
                 has_news, news_score, catalyst, headline = self._get_news(sym)
 
-                # Quotes for current price
-                quotes  = self.kite.get_quotes([sym])
+                # Quotes for current price (Fix #168 — use per-tick cache)
+                quotes  = self._get_cached_quote(sym)
                 stock_chg = quotes.get(sym, {}).get("change_pct", 0.0)
 
                 # Build scoring objects
@@ -1326,14 +1370,16 @@ class TradingCrew:
             conviction_result = None
             if USE_CONVICTION_ENGINE:
                 try:
-                    live_q_for_conv = self.kite.get_quotes([sym])
+                    # Fix #167 (2026-05-18): was firing get_quotes([sym]) TWICE here —
+                    # once for stock_quote, once just to extract depth. The same
+                    # full-quote response already contains depth.
+                    # Fix #168 (2026-05-18): now reads from the per-tick cache
+                    # populated by _scan_market's batch fetch. ~360 Kite calls
+                    # per tick → ~3. And conviction reads the same price every
+                    # downstream consumer reads — no race.
+                    live_q_for_conv = self._get_cached_quote(sym)
                     stock_quote = live_q_for_conv.get(sym, {})
-                    # Best-effort: fetch order book if available
-                    order_book = None
-                    try:
-                        order_book = self.kite.get_quotes([sym]).get(sym, {}).get("depth")
-                    except Exception:
-                        pass
+                    order_book = stock_quote.get("depth")
                     # Build minimal setup-like object the engine can read .grade from
                     class _SetupView:
                         def __init__(self, grade): self.grade = grade
@@ -1584,7 +1630,38 @@ class TradingCrew:
             )
 
             tx = "BUY" if s.get("direction", "long") == "long" else "SELL"
-            self.kite.place_order(sym, tx, qty)
+            # Fix #170 (2026-05-18) — capture return value + rollback on broker
+            # reject. Was: `self.kite.place_order(sym, tx, qty)` with no return
+            # check. In live mode, place_order returns None on broker reject
+            # (insufficient margin, frozen symbol, market-not-open, etc.).
+            # Without rollback, the position row written above was a phantom:
+            # state thinks we own qty shares, broker has no record. Critical
+            # before flipping PAPER_TRADING=False for the live probe.
+            entry_order_id = self.kite.place_order(sym, tx, qty)
+            if entry_order_id is None and not PAPER_TRADING:
+                # Live mode reject — roll back. Paper mode always returns a
+                # fake id so this branch only fires for real broker failures.
+                print(f"[Allocator] 🛑 ENTRY REJECTED by broker — {sym} "
+                      f"{tx} {qty} (no order id returned). Rolling back "
+                      f"phantom position row id={pos_id}.")
+                try:
+                    self.state.delete_position_row(pos_id)
+                except Exception as _e:
+                    print(f"[Allocator] rollback delete failed: {_e}")
+                # Telegram alert so the operator sees this immediately
+                try:
+                    from tools.telegram_tools import _send
+                    _send(
+                        f"🛑 <b>ENTRY REJECTED</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🔴 {sym} {tx} {qty}\n"
+                        f"Broker returned no order id. Position row deleted.\n"
+                        f"Check margin / symbol-freeze / market session."
+                    )
+                except Exception:
+                    pass
+                self._rej("entry_order_rejected")
+                continue
 
             # Broker-side SL-M (Fix #6) — opposite side, trigger at the stop
             sl_tx = "SELL" if s.get("direction", "long") == "long" else "BUY"

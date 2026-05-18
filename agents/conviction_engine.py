@@ -227,10 +227,15 @@ class ConvictionEngine:
                             pass
                         if STOCK_DECOUPLING_ENABLED:
                             # Build a tier-B-equivalent result with half-size.
+                            # Fix #166 (2026-05-18): was `0.5 * dec_res.size_multiplier * 2`
+                            # which cancels itself — `* 2` reverted the `* 0.5` and
+                            # only produced 0.5 net by coincidence when
+                            # dec_res.size_multiplier == 1.0. The clear intent is
+                            # "half-size relative to whatever decoupling proposed".
                             from config.settings import CONVICTION_RISK_INR, CONVICTION_TARGET_INR
                             return ConvictionResult(
                                 tier="B",
-                                size_multiplier=0.5 * dec_res.size_multiplier * 2,  # 0.5 net
+                                size_multiplier=0.5 * dec_res.size_multiplier,
                                 risk_inr=CONVICTION_RISK_INR.get("B", 750) * 0.5,
                                 target_inr=CONVICTION_TARGET_INR.get("B", 1500) * 0.5,
                                 reasoning=f"decoupling-override-on-{macro_snap.state}: {dec_res.reason}",

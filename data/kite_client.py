@@ -54,7 +54,15 @@ class KiteDataClient:
     def get_quotes(self, symbols: list[str]) -> dict:
         """
         Batch quote fetch.
-        Returns dict: symbol → {last_price, volume, open, high, low, close, change_pct}
+        Returns dict: symbol → {last_price, volume, open, high, low, close,
+                                change_pct, bid, ask, depth}
+
+        Fix #167 (2026-05-18): added `depth` (full 5-level order book) so
+        callers don't have to fire a second get_quotes() to read it. The
+        Kite /quote endpoint returns depth in the same response anyway —
+        previously we were extracting only top-of-book bid/ask and tossing
+        the rest. Conviction engine's 5-level depth-ratio check now reads
+        from this field; no extra network call needed.
         """
         instrument_keys = [f"{self.EXCHANGE}:{s}" for s in symbols]
         try:
@@ -68,6 +76,7 @@ class KiteDataClient:
                     last = q.get("last_price", 0)
                     close_prev = ohlc.get("close", last)
                     change_pct = ((last - close_prev) / close_prev * 100) if close_prev else 0
+                    depth = q.get("depth", {})
                     result[symbol] = {
                         "last_price":  last,
                         "volume":      q.get("volume", 0),
@@ -76,8 +85,9 @@ class KiteDataClient:
                         "low":         ohlc.get("low", 0),
                         "close":       close_prev,
                         "change_pct":  round(change_pct, 3),
-                        "bid":         q.get("depth", {}).get("buy", [{}])[0].get("price", 0),
-                        "ask":         q.get("depth", {}).get("sell", [{}])[0].get("price", 0),
+                        "bid":         (depth.get("buy",  [{}]) or [{}])[0].get("price", 0),
+                        "ask":         (depth.get("sell", [{}]) or [{}])[0].get("price", 0),
+                        "depth":       depth,   # full 5-level order book
                     }
             return result
         except Exception as e:

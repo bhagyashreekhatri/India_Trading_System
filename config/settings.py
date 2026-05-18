@@ -179,8 +179,11 @@ MONTHLY_NEG_R_REVIEW      = True         # on last trading day of month, EOD job
 # empirical setup-aware rule: median_TTP1 × safety_factor ≤ remaining_minutes.
 # Default OFF; LOG_SHADOW=True emits would-skip/would-admit lines for
 # observation without blocking.
-RUNWAY_CHECK_ENABLED       = False       # SHADOW MODE — logs only
-RUNWAY_CHECK_LOG_SHADOW    = True        # emit [Runway] log lines anyway
+# Fix #171 (2026-05-18) — flipped to True per operator decision. Removes the
+# last clock-category survivor (NO_NEW_ENTRY_AFTER=14:45 hard wall). Rollback:
+# set back to False if entries are blocked unexpectedly or runway math acts up.
+RUNWAY_CHECK_ENABLED       = True        # LIVE — was SHADOW until 2026-05-18
+RUNWAY_CHECK_LOG_SHADOW    = True        # keep [Runway] log lines for visibility
 RUNWAY_SAFETY_FACTOR       = 1.5         # buffer over median TTP1
 RUNWAY_LOOKBACK_TRADES     = 50          # median window per setup
 RUNWAY_MIN_REMAINING_MIN   = 20          # absolute floor — never enter < 20m before EOD
@@ -427,7 +430,11 @@ DISCOVERY_MAX_TOTAL              = 15       # max live-discovery names at once
 DISCOVERY_MAX_PER_SESSION        = 40       # cumulative session cap
 DISCOVERY_BLACKLIST_LOSS_THRESHOLD = 2      # losses before auto-blacklist
 DISCOVERY_BLACKLIST_DAYS         = 7        # blacklist duration (trading days)
-DISCOVERY_ALLOW_TRADES           = False    # SHADOW MODE — flip to True after validation
+# Fix #171 (2026-05-18) — flipped to True per operator decision. Live admit
+# evidence: FCL +19.97% on 2026-05-18 (circuit-veto correctly blocked); filter
+# v5 + CIRCUIT_VETO=18% in place. Rollback: set back to False to roll Discovery
+# back into shadow mode without losing the [Discovery] log telemetry.
+DISCOVERY_ALLOW_TRADES           = True     # LIVE — was SHADOW until 2026-05-18
 DISCOVERY_MAX_NEW_CONTEXT_FETCHES_PER_SCAN = 10  # rate-limit guard: max Kite get_candles calls per scan
                                                   # (daily-context cache is persisted to disk so subsequent
                                                   #  scans skip already-seen symbols)
@@ -444,8 +451,12 @@ DISCOVERY_MAX_NEW_CONTEXT_FETCHES_PER_SCAN = 10  # rate-limit guard: max Kite ge
 #
 # Catches the "got in clean, market changed under me" loss class. Default OFF
 # via MID_TRADE_REEVAL_ENABLED. Shadow logs via MID_TRADE_REEVAL_LOG_SHADOW.
-MID_TRADE_REEVAL_ENABLED       = False    # SHADOW MODE — log only initially
-MID_TRADE_REEVAL_LOG_SHADOW    = True     # emit [Reeval] lines anyway
+# Fix #171 (2026-05-18) — flipped to True per operator decision. Lowest-risk
+# of the 4 flips: TIGHTEN_TO_BE is a stop-tighten (not market exit) and CLOSE
+# is shadow-validated. Catches the "got in clean, market changed under me"
+# loss class. Rollback: set back to False to revert to shadow.
+MID_TRADE_REEVAL_ENABLED       = True     # LIVE — was SHADOW until 2026-05-18
+MID_TRADE_REEVAL_LOG_SHADOW    = True     # keep [Reeval] lines for visibility
 MID_TRADE_REEVAL_INTERVAL_MIN  = 5        # re-check at most once per N min per position
 MID_TRADE_HOD_RELAX_PCT        = 0.015    # 1.5% (relaxed from entry's 0.5%)
 MID_TRADE_TIGHTEN_AT_BROKEN    = 2        # 2/3 dims broken → tighten SL to BE
@@ -463,7 +474,12 @@ MID_TRADE_CLOSE_AT_BROKEN      = 3        # 3/3 dims broken → close at market
 #   - with its own first-hour high cleanly broken
 # may be admitted at tier B- (half-size of B). Catches the 2026-05-12 ONGC
 # +5.93% case that the binary macro filter blocked.
-STOCK_DECOUPLING_ENABLED               = False   # SHADOW MODE — log only until validated
+# Fix #171 (2026-05-18) — flipped to True per operator decision, paired with
+# Fix #166 which corrected the sizing math (0.5 × x × 2 → 0.5 × x). On macro
+# RED/STRONG_RED days, allows one stock that meets the 6-condition rule to
+# enter at tier B half-size. Catches ONGC-class +5.93% admits the binary macro
+# gate blocked. Rollback: set back to False to revert to shadow.
+STOCK_DECOUPLING_ENABLED               = True    # LIVE — was SHADOW until 2026-05-18
 STOCK_DECOUPLING_MIN_PCT               = 4.0     # stock %chg vs prev close
 STOCK_DECOUPLING_MIN_VOL_RATIO         = 1.5     # today_vol / 20d_avg_vol
 STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT = 0.5     # LTP within X% of intraday high
