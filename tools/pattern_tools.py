@@ -1,14 +1,22 @@
 """
 Pattern Detection Tools — pure Python, zero LLM calls.
-Detects 7 intraday setups:
-  1. Momentum Breakout
-  2. VWAP Pullback
-  3. VWAP Reclaim
-  4. Recovery Setup
-  5. Range Breakout
-  6. ORB (Opening Range Breakout — 15-min)   ← NEW
-  7. Failed Breakdown                          ← NEW
-Plus gap analysis at open.
+
+PHASE 0.6 / Fix #165 (2026-05-18):
+Active detector — only **MOMENTUM_BREAKOUT** fires via `_detect_setups_multi`.
+
+Dormant detectors retained as helpers ONLY (no live caller):
+  - `_detect_orb_breakout`     — has hardcoded 09:30-10:30 IST clock gate
+                                  (Three-Laws Law-1 violation; do not re-arm
+                                  without structural rewrite)
+  - `_detect_failed_breakdown`
+  - `_detect_trend_pullback`
+  - `_detect_inside_bar_break`
+The 280-trade audit (`docs/08_Findings_From_280_Trades.md`) showed these were
+all net-negative after costs. Kept as helpers because the 30-month research
+flagged that they may be conditionally re-arm-able on GREEN macro days in a
+future Phase 1 work item. They are NOT called from any production path today.
+
+Also kept: gap analysis helpers (used by `main.py` startup scan).
 """
 import json
 import pandas as pd
@@ -120,7 +128,28 @@ def _make_signal(
     }
 
 
-# ─── ORB (Opening Range Breakout) ─────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# ▼▼▼  DORMANT DETECTORS — DO NOT CALL FROM PRODUCTION PATHS  ▼▼▼
+# ═════════════════════════════════════════════════════════════════════════════
+# These detectors were removed from `_detect_setups_multi` after the 280-trade
+# audit (docs/08) showed they were all net-negative after costs. They remain
+# in this file ONLY as reference helpers for a future "conditional re-arming"
+# work item (e.g., re-arm ORB on GREEN macro days only, after a structural
+# rewrite to remove the clock gate).
+#
+# Three-Laws WARNING:
+#   - `_detect_orb_breakout` has a hardcoded 09:30-10:30 IST clock gate
+#     (Law-1 violation). Do not re-arm without removing this gate.
+#   - Any clock-shaped logic inside these functions must be re-derived as a
+#     structural property (e.g., "X bars since session open" or "Y minutes
+#     since first valid bar") before re-arming.
+#
+# Tested-but-zero-callers list (search grep before touching):
+#   _detect_orb_breakout, _detect_failed_breakdown, _detect_trend_pullback,
+#   _detect_inside_bar_break, _get_orb_levels (only its tool wrapper is exported)
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ─── ORB (Opening Range Breakout) — DORMANT, has clock gate ──────────────────
 
 def _get_orb_levels(symbol: str) -> dict | None:
     """

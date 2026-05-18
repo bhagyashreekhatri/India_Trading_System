@@ -204,7 +204,6 @@ with st.sidebar:
 
             eff_thresh   = sys_status.get("effective_threshold", score_threshold)
             consec       = sys_status.get("consecutive_losses", 0)
-            is_midday    = sys_status.get("midday_mode", False)
             last_tick_str = sys_status.get("last_tick", "—")
             regime_lbl   = sys_status.get("regime", "—").upper()
 
@@ -216,13 +215,14 @@ with st.sidebar:
             status_is_fresh = file_age_min < 15   # written within last 15 min
 
             if status_is_fresh and eff_thresh > score_threshold:
-                # Engine is actively overriding the slider — warn user
-                reason = "midday lull" if is_midday and consec < 3 \
-                         else f"{consec} consecutive losses"
+                # Engine is actively overriding the slider — warn user.
+                # Fix #165 (2026-05-18) — removed "midday lull" reason; the
+                # underlying _is_midday() was deleted. Loss streak is now the
+                # only legitimate override reason.
                 st.warning(
                     f"⚠️ Engine overriding to **{eff_thresh}** "
                     f"(your slider: {score_threshold})\n"
-                    f"Reason: {reason}"
+                    f"Reason: {consec} consecutive losses"
                 )
                 override_active = True
         except Exception:

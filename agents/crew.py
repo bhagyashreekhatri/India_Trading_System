@@ -53,7 +53,7 @@ from config.settings import (
     SETUP_DISARMED_LIST, MOMENTUM_BO_MIN_CONFLUENCE, MOMENTUM_BO_REQUIRE_PRIORITY,
     PENDING_RETEST_ENABLED, PENDING_RETEST_WINDOW_MIN, PENDING_RETEST_TOLERANCE_PCT,
     PENDING_RETEST_MAX_DRIFT_PCT, PENDING_RETEST_LOG_PATH,
-    HOUR_GATE_NUDGES, LOSER_STREAK_SIZE_TIERS,
+    LOSER_STREAK_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
     MIDDAY_AVOID_START, MIDDAY_AVOID_END,
@@ -443,19 +443,20 @@ class TradingCrew:
             return False
         if t >= no_entry:
             return False
-        # Phase 2.5 hygiene — the legacy midday-lull log was firing every tick
-        # 13:00-14:00 IST and cluttering journalctl with no actionable info.
-        # The midday `conservative` flag (line ~702) is consulted only by the
-        # legacy `_score_signals` path, NOT by the conviction engine which is
-        # the production decision authority. So the gate is effectively a
-        # no-op for new entries anyway; the log message was pure noise.
-        # Underlying `_is_midday()` retained for legacy callers; just the
-        # per-tick print removed.
+        # Fix #165 (2026-05-18) — historical context:
+        # The legacy midday-lull log was firing every tick 13:00-14:00 IST,
+        # cluttering journalctl. Phase 2.5 removed the log message. Fix #165
+        # then removed the underlying `_is_midday()` method entirely as a
+        # Three-Laws Law-3 violation (clock category in code & reasoning).
+        # Conviction engine reads structural state directly — no clock gate.
         return True
 
-    def _is_midday(self) -> bool:
-        t = _now_ist().time()
-        return _parse_time(MIDDAY_AVOID_START) <= t < _parse_time(MIDDAY_AVOID_END)
+    # Fix #165 (2026-05-18) — `_is_midday()` DELETED.
+    # Was: returned True between MIDDAY_AVOID_START and MIDDAY_AVOID_END.
+    # Why deleted: clock-category gate that Phase 0.5 already neutralized
+    # (no callers consult it for trading decisions anymore — only dashboard
+    # status JSON did, and that has been removed too). Removing the method
+    # closes the Three-Laws Law-3 violation surface for future archaeology.
 
     # ── Agent 1: Market Scanner ───────────────────────────────────────────────
 
@@ -758,14 +759,17 @@ class TradingCrew:
         # the asymmetric cooldown (45m after loss). Those work on capital
         # preservation, not on regression theory.
 
-        # Write effective threshold to status file so dashboard can display it
-        conservative = consec >= MAX_CONSECUTIVE_LOSSES or self._is_midday()
+        # Write effective threshold to status file so dashboard can display it.
+        # Fix #165 (2026-05-18) — `midday_mode` removed. The legacy `_is_midday()`
+        # was a clock-category leakage into the dashboard (Three-Laws Law-3
+        # violation). Conservative mode is now driven purely by consecutive
+        # losses, which is a structural risk signal — not a wall-clock one.
+        conservative = consec >= MAX_CONSECUTIVE_LOSSES
         try:
             STATUS_FILE.write_text(json.dumps({
                 "effective_threshold": round(min_score, 1),
                 "conservative_mode":   conservative,
                 "consecutive_losses":  consec,
-                "midday_mode":         self._is_midday(),
                 "regime":              regime_data.get("regime", "unknown"),
                 "breadth_label":       breadth_data.get("breadth_label", "NEUTRAL"),
                 "last_tick":           _now_ist().strftime("%H:%M:%S"),

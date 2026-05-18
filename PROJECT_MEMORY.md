@@ -1,6 +1,6 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-05-18 ~11:30 IST | Operator: Bhagya*
-*Recent activity: Phase 2.1 hardening (3 fixes) + Phase 2.7/2.8/2.9 shadow-validation infrastructure shipped today. Discovery now seeds ~1500 names properly; news catalyst attribution + mid-trade re-evaluation + RVOL ghost telemetry + dashboard Shadow tab all wired in shadow mode.*
+*Last updated: 2026-05-18 ~15:30 IST | Operator: Bhagya*
+*Recent activity: Discovery filter v3→v5 (CF mitigation) + scalper-lens audit fixes #159-162. Conviction engine is now sole decision authority — was being silently nuked by stub-scorer's MIN_SCORE_ENTRY=7.0 gate. HOD proximity relaxed 0.5%→1.2% to allow pullback-to-FHH-retest entries. PROBE_MODE wired through allocator (closed 30× risk footgun for live probe). First live Discovery admit: FCL +19.97% on 2026-05-18.*
 
 ---
 
@@ -399,6 +399,39 @@ Live-day observation surfaced a critical Discovery bug + opportunities for the n
 | 80 | **Phase 2.8 — RVOL backtest analyzer** — new `scripts/rvol_backtest.py`. Reads `rvol_ghost.jsonl`, for each rejection pulls 5-min candles from Kite, walks forward bar-by-bar to determine outcome (TP1 hit / SL hit / EOD pnl_r), buckets by RVOL (`[0.5-1.0)`, `[1.0-1.5)`, `[1.5-1.7)`, `[1.7-2.0)`, `[2.0-2.5)`, `[2.5+]`), produces win-rate + mean R per bucket, recommends `MOMENTUM_BO_MIN_RVOL` threshold based on lowest bucket with n≥5 AND positive mean-R. After 2-3 weeks of accumulated data, this replaces "we think 2.0 might be too tight" with empirical evidence | `scripts/rvol_backtest.py` | bucket-labeling tests pass; analyzer ready to run once data accumulates |
 | 81 | **Phase 2.9 — `tools/shadow_log.py` helper** — single `record_shadow_event(event_type, data, path)` function. Used by `agents/crew.py` (Reeval TIGHTEN-SHADOW / CLOSE-SHADOW events → `reeval_shadow.jsonl`) and `agents/conviction_engine.py` (Decoupling ADMIT-SHADOW events → `decoupling_shadow.jsonl`). Same JSONL pattern as `discovery_admits.jsonl` and `rvol_ghost.jsonl`. Best-effort writes — never breaks the caller | `tools/shadow_log.py`, `agents/crew.py`, `agents/conviction_engine.py` | unit test confirms structured records write correctly |
 | 82 | **Phase 2.9 — Shadow Mode dashboard tab** — new 4th tab in Streamlit dashboard. Reads all 4 shadow JSONL files and renders: (1) 🔍 Discovery Admits table with catalyst headlines, (2) 🎯 Decoupling would-admit table, (3) 🔄 Re-eval TIGHTEN/CLOSE events table, (4) 📉 RVOL Ghost Rejections with bucket histogram + table. Top metrics row shows count-per-file. "Show today only" checkbox to filter. Lets us scan "what did the agent NEARLY do today?" without grepping journalctl | `dashboard/shadow_tab.py`, `dashboard/app.py` | AST clean; sample JSONL data renders correctly |
+
+### Live-day hardening (shipped 2026-05-18 PM)
+
+After Phase 2.9 deployed, a live-day session surfaced two classes of issues:
+(a) Discovery seed-pool filter was too permissive (CF-blocked + over-seeded);
+(b) A scalper-lens code audit found 4 critical bugs / hostile-defaults in the
+crew.py tick path that were silently nuking conviction-engine admits.
+
+**Discovery filter + chunking hardening (v3 → v5):**
+
+| # | What changed | Files | Validation |
+|---|---|---|---|
+| Dv3 | **Filter v3 — suffix regex expanded** — added `-SM` (SME), `-RR` (REIT/Rights Renounce), `-IV` (InvIT), `-NG` (debt notes), `-Y\d` (debt), `-IT` (trust) to `_NON_EQ_SUFFIX_RE`. Also added 0.6s sleep between Kite quote chunks + 2-consecutive-empty abort to defuse Cloudflare burst-detection. Pool dropped from 9,538 → 2,547. **First live Discovery admit ever**: FCL +19.97% on 2026-05-18 14:30 IST (but stock at upper circuit — see Fix #164 below) | `agents/discovery_engine.py` | 36/36 then 85/85 filter regression tests |
+| Dv4 | **Filter v4 — `-SF` suffix + per-chunk retry-with-backoff** — caught `QSIFAARG-SF`/`QSIFAARR-SF` leaks. Added 2.5s retry on empty CF-blocked chunks. FAILED in production: identical 30KB URL on retry hits identical CF fingerprint block. Retry approach abandoned | `agents/discovery_engine.py` | retry didn't help; CF blocks on URL signature, not transient state |
+| Dv5 | **Chunk size 500 → 150** — root cause of CF blocks was URL length (30KB with 500 instrument tokens). 150-symbol chunks give ~10KB URLs, well under bot-pattern thresholds. 17 chunks × 0.6s sleep ≈ 18s total scan latency, well inside 3-min tick interval | `agents/discovery_engine.py` | syntax clean; live verification on next boot |
+
+**Scalper-lens audit fixes (Fix #159-162):**
+
+| # | What changed | Files | Validation |
+|---|---|---|---|
+| 159 | **`place_sl_order` kwargs mismatch** — `crew.py:1686-1691` (PreTP1Trail) and `1764-1769` (Reeval-Tighten) called `place_sl_order(symbol=, quantity=, trigger_price=, direction=)` but the actual signature is `(symbol, transaction, quantity, trigger, price)`. Would TypeError on every live SL tighten. Broad `except Exception` was hiding it in paper mode. Live mode flip would silently leave SL at the original stop — exactly the loss class Phase 1.2 was added to prevent | `agents/crew.py` | both call sites fixed; syntax clean |
+| 160 | **Bypass `_score_signals` gates when conviction is authority** — `_score_signals` was running BEFORE conviction every tick, applying `MIN_SCORE_ENTRY=7.0` + RVOL veto + score decay + per-setup gates. The stub scorer returns ~3-6 for most clean structural admits → conviction admits died at the score gate before `_allocate` ever saw them. 4 surgical edits: (a) `_score_signals` `will_enter` gate now bypasses score check when `USE_CONVICTION_ENGINE=True`; (b) `+2R tighten` filter replaced with conviction-tier filter (S-only instead of score ≥ 8.0); (c) signal-age >5min now hard-skips in conviction mode instead of score-decay-and-re-gate; (d) sizing uses `conviction_size_mult` instead of double-scaling with `SCORE_SIZE_TIERS`. Conviction engine is now the sole decision authority — old path preserved for fallback | `agents/crew.py` | syntax clean; behavior gated on existing flag |
+| 161 | **Wire `PROBE_MODE_ENABLED` through `_allocate`** — `config/settings.py` had `get_active_capital()`/`get_active_max_positions()`/`get_active_conviction_risk()`/`get_active_conviction_target()` helpers ready, but `crew.py` was using bare `CAPITAL` (₹15L) and `MAX_POSITIONS` in 6 places. Flipping `PROBE_MODE_ENABLED=True` + `PAPER_TRADING=False` for the ₹50k live probe would size against ₹15L — **30× intended risk**. Now `_allocate` reads `active_capital`/`active_max_positions` once at top, used consistently throughout (kill-floor, lockout-ceiling, week-floor, max-pos check, risk-amount, max-pos-val, min-risk, min-pos) | `agents/crew.py` | syntax clean; helper returns verified |
+| 162 | **HOD proximity 0.5%→1.2%, change_pct floor -0.3%** — conviction engine was rejecting any stock with `change_pct < 0` AND requiring LTP within 0.5% of day high. Together: stock must be POSITIVE on the day AND within 0.5% of HOD. That eliminated every clean pullback-to-FHH-retest entry (the canonical scalper setup — stock is up structurally, just pulled to test the breakout level). New: `STOCK_HOD_PROXIMITY_PCT=0.012` (1.2%) + new `STOCK_CHANGE_PCT_FLOOR=-0.003` setting (-0.3%). Captures "flat with bullish structure" while still rejecting clearly-bearish bouncing-from-low names | `config/settings.py`, `agents/conviction_engine.py` | settings load verified; conviction_engine imports clean |
+
+**Audit findings deferred to next pass (logged for visibility):**
+
+- 🟡 `_score_signals` does 4-7 Kite quote calls per candidate per tick — race-prone, slow. Should cache `self._quote_cache` for the duration of a tick.
+- 🟡 `conviction_engine.py:220` sizing math `0.5 * dec_res.size_multiplier * 2` cancels itself; works by coincidence. Should be `0.5 * dec_res.size_multiplier`.
+- 🟡 `place_order` returns `None` on broker reject without exit-path recheck → state can write "closed" when order didn't actually exit.
+- 🟢 `_is_midday()` still survives; leaks `"midday_mode"` to dashboard status JSON (Three-Laws Law-3 violation).
+- 🟢 14 stale constants in `settings.py` from Phase 0.5 (HOUR_GATE_NUDGES, MIN_SCORE_ENTRY_CONSERVATIVE, CONFLUENCE_MULTIPLIER_2/3, etc.) — defined but never read.
+- 🟢 `tools/pattern_tools.py` still has 1500+ LOC of unused detectors with `_detect_orb_breakout`'s hardcoded 09:30-10:30 IST gate — dead-code Three-Laws violation surface.
 
 ### Open / pending after this work
 

@@ -127,23 +127,21 @@ LOSER_STREAK_SIZE_TIERS = [
     0.30,   # 4+ losses
 ]
 
-# ─── Time-of-day score gate nudges (Fix #24 / A5) ────────────────────────────
-# From file 04 trade-log analysis (151 trades, 6 sessions):
-#   Hour 12 IST: 64.7% WR, 76.7% of total P&L → BEST window
-#   Hour 11 IST: 72.7% WR, +₹16k → strong
-#   Hour 13 IST: 70%   WR, +₹2.5k → fine
-#   Hour 14 IST: 54.5% WR
-#   Hour 9  IST: 50.9% WR, 38% of trades, only 5% of P&L → noisy hour
-#   Hour 10 IST: 58.8% WR, only losing hour
-# Nudges applied to MIN_SCORE_ENTRY at the top of _score_signals.
-HOUR_GATE_NUDGES = {
-    9:  +0.3,   # Loud noise — raise the bar (was +0.5; relaxed Fix #37)
-    10: +0.2,   # Only-losing hour — raise the bar (was +0.3; relaxed Fix #37)
-    11: -0.0,   # Solid — neutral
-    12: -0.2,   # Best hour — lower the bar
-    13:  0.0,
-    14:  0.0,
-}
+# ─── HOUR_GATE_NUDGES — DELETED Fix #165 (2026-05-18) ────────────────────────
+# Was: a dict mapping IST hour → score-gate nudge (Fix #24 / A5).
+# Why deleted:
+#   1. The Phase 0.5 rebuild (2026-05-11) removed the *application* of these
+#      nudges from `_score_signals` but left the dict imported. Audit found
+#      it was dead weight and a Three-Laws Law-1 violation surface (clock
+#      categories). 30-month analysis (584 sessions) refuted the original
+#      premise — hours nudged DOWN (12 IST) had +0.099R but hours nudged UP
+#      (9-10 IST) had 51-58% WR, not catastrophic.
+#   2. Three Laws Law-3: time-of-day weight must be LEARNED from data, not
+#      declared in a static dict. The conviction engine reads structural
+#      state (macro + FHH + day-type) which captures the actionable hour-
+#      correlated signal directly.
+# Kept as a tombstone comment so future archaeology finds the reasoning.
+# (Originally: {9:+0.3, 10:+0.2, 11:0, 12:-0.2, 13:0, 14:0})
 
 # ─── Market breadth thresholds ───────────────────────────────────────────────
 BREADTH_BULLISH         = 0.65           # >65% stocks above VWAP → lean long
@@ -416,6 +414,12 @@ DISCOVERY_SCAN_INTERVAL_SEC      = 300      # 5 min between scans
 DISCOVERY_FIRST_SCAN_DELAY_MIN   = 15       # skip 09:15-09:30 open auction noise
 DISCOVERY_MIN_PCT_MOVE           = 2.5      # |pct_change| threshold to admit
 DISCOVERY_MIN_VOLUME_RATIO       = 1.5      # today_vol / 20d_avg_vol
+# Fix #164 (2026-05-18): NSE non-F&O equity locks at 20% UC; surveillance
+# stocks lock at 5% or 10%. At/near circuit there's no two-way market — the
+# 2026-05-18 FCL admit at +19.97% had spread=0.000% pull-from-extreme=0.00%
+# = literally locked-no-fills. We veto absolute moves ≥ this threshold so
+# Conviction doesn't waste attention on names we structurally can't trade.
+DISCOVERY_UPPER_CIRCUIT_VETO_PCT = 18.0     # |pct_change| ≥ 18% → veto (locked)
 DISCOVERY_MIN_AVG_TURNOVER_INR   = 10e7     # ₹10 crore avg daily turnover
 DISCOVERY_MAX_SPREAD_PCT         = 0.0015   # 0.15% (slightly looser than entry SPREAD_MAX_PCT)
 DISCOVERY_MAX_NEW_ADDS_PER_SCAN  = 5

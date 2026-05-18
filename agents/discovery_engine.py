@@ -545,6 +545,27 @@ class DiscoveryEngine:
         if abs(pct_change) < self.s.DISCOVERY_MIN_PCT_MOVE:
             return None
 
+        # Filter #1.5 — circuit-locked names are untradeable (2026-05-18)
+        # NSE non-F&O equity has 20% upper/lower circuit (or 10%/5% for
+        # surveillance categories). At/near circuit the stock locks: no
+        # two-way market, no fills, queued buyers/sellers stack up. Admitting
+        # them wastes Conviction's attention and pollutes audit logs with
+        # "ADMIT spread=0.000% pull-from-extreme=0.00%" lines that cannot
+        # become real trades. The 2026-05-18 FCL admit at +19.97% (literally
+        # at +20% UC) was the trigger case.
+        #
+        # We use a configurable ceiling (default 18%) so 5%/10% surveillance
+        # circuits are still handled — those stocks rarely move > 18% in a
+        # session anyway, and the absolute test catches both standard and
+        # tighter circuits without us tracking per-symbol circuit limits.
+        veto_pct = getattr(self.s, "DISCOVERY_UPPER_CIRCUIT_VETO_PCT", 18.0)
+        if abs(pct_change) >= veto_pct:
+            # Log once per session per symbol — visible in admit log so the
+            # operator can confirm we DID see it (just couldn't trade it).
+            print(f"[Discovery] CIRCUIT-VETO {sym} {pct_change:+.2f}% "
+                  f"(≥ {veto_pct}% threshold) — locked, no fills possible")
+            return None
+
         # Filter #2 — volume confirmation
         # We use today's reported volume / 20d avg daily volume as proxy.
         # Cache lookup first — populated lazily on first need from
