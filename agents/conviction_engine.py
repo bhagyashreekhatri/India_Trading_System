@@ -103,22 +103,35 @@ class ConvictionEngine:
             CONVICTION_TARGET_INR,
             STOCK_HOD_PROXIMITY_PCT,
         )
+        # Fix #162 — STOCK_CHANGE_PCT_FLOOR added in same fix. Local import to
+        # keep back-compat with older settings.py snapshots.
+        try:
+            from config.settings import STOCK_CHANGE_PCT_FLOOR
+        except ImportError:
+            STOCK_CHANGE_PCT_FLOOR = 0.0
 
         failed = []
 
         # ── Universal pre-entry filters ─────────────────────────────────────
-        # 1. Stock must be up on the day (don't long bouncing-from-low stocks)
-        if stock_quote.get("change_pct", 0.0) < 0.0:
+        # 1. Fix #162: change_pct floor (was hardcoded `< 0 → SKIP`).
+        # The original rule blocked ANY stock with negative day_pct, killing
+        # the textbook scalper pullback-to-FHH-retest setup (stock up
+        # structurally, just pulled to test the breakout level). Now allows
+        # stocks down to -0.3% which captures "flat with bullish structure"
+        # while still rejecting clearly-bearish bouncing-from-low names.
+        if stock_quote.get("change_pct", 0.0) < STOCK_CHANGE_PCT_FLOOR:
             return _skip(
-                "stock_negative_day",
+                f"stock_below_floor_{stock_quote.get('change_pct', 0.0):+.2f}%",
                 macro_state="-", fhh_state="-",
-                failed=["stock_change_pct<0"],
+                failed=[f"stock change_pct {stock_quote.get('change_pct',0.0):+.2f}% "
+                        f"< floor {STOCK_CHANGE_PCT_FLOOR*100:+.2f}%"],
             )
 
         # 1b. Stock must be near today's high — don't chase extended moves.
         # Validated 30-month finding: structural entry should be at or near
-        # the fresh HOD. If LTP is >0.5% below the day high, the move has
-        # already happened.
+        # the fresh HOD. Fix #162 relaxed the 0.5% threshold to 1.2% so clean
+        # pullback-to-FHH-retest entries aren't rejected just for being one
+        # candle off the absolute tick.
         ltp_pre = stock_quote.get("last_price", 0.0)
         day_high = stock_quote.get("high", 0.0)
         if ltp_pre > 0 and day_high > 0:

@@ -339,11 +339,17 @@ SPREAD_MAX_PCT                 = 0.0010   # 0.10%
 
 
 # ── Stock-level HOD proximity (Phase 1.1) ────────────────────────────────────
-# A stock trading > 0.5% below today's high is structurally extended off the
-# top — chasing risk. Validated by the 30-month research: entries should fire
-# at fresh HOD prints, not after the move has already happened. Max distance
-# from HOD for a valid entry candidate.
-STOCK_HOD_PROXIMITY_PCT        = 0.005    # 0.5% — must be near fresh HOD
+# Maximum % below today's high for a valid entry candidate.
+# Fix #162 (2026-05-18): relaxed 0.005 (0.5%) → 0.012 (1.2%) after audit found
+# 0.5% was scalper-hostile. Real pullback-to-FHH-retest entries (the textbook
+# tape-reader setup) typically pull back 0.6-1.0% off the fresh HOD before the
+# second clean push. Combined with the legacy "change_pct < 0 → SKIP" rule
+# (also relaxed to -0.3% in this fix), 0.5% eliminated almost every clean
+# pullback admit — only naked HOD breaks survived. The mid-trade re-eval
+# already uses 1.5% for its HOD-broken-check, so 1.2% pre-entry is tighter
+# than the post-entry tolerance, which is what we want.
+STOCK_HOD_PROXIMITY_PCT        = 0.012    # 1.2% — fresh HOD or clean pullback
+STOCK_CHANGE_PCT_FLOOR         = -0.003   # -0.3% — allows flat/bullish-structure pullback
 
 
 # ── Per-stock FHH break requirement (Phase 1.1) ──────────────────────────────

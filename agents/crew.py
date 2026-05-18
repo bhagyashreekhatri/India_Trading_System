@@ -1000,14 +1000,32 @@ class TradingCrew:
                     elif new_score >= 5.0: comp.grade = Grade.B
                     else:                  comp.grade = Grade.C
 
-                # Per-setup score overrides — raise bar for underperforming setups
+                # Per-setup score overrides — raise bar for underperforming setups.
+                # Fix #160 (2026-05-18): when conviction engine is the decision
+                # authority (USE_CONVICTION_ENGINE=True), these per-setup score
+                # gates are bypassed because conviction tier (S/A/B/SKIP) IS the
+                # gate. The legacy `failed_breakdown >= 7.5` override only made
+                # sense in the old 0-10 scoring world; in conviction mode every
+                # admit is structurally validated by macro + FHH + stock state.
                 SETUP_MIN_SCORES = {
                     "failed_breakdown": 7.5,   # 33% WR in 151-trade dataset
                 }
                 setup_min    = SETUP_MIN_SCORES.get(s.get("setup_type", ""), 0)
                 effective_min = max(min_score, setup_min)
 
-                will_enter = result.is_valid and comp.final_score >= effective_min
+                # Fix #160 — Bypass the stub-score gate when conviction is on.
+                # The stub `_score_signals` returns ~3-6 for most clean structural
+                # admits, so `score ≥ MIN_SCORE_ENTRY (7.0)` would kill every
+                # conviction-A admit before _allocate even sees it. Let validity +
+                # proximity decide here; conviction in _allocate decides take/skip.
+                try:
+                    from config.settings import USE_CONVICTION_ENGINE as _UCE
+                except ImportError:
+                    _UCE = False
+                if _UCE:
+                    will_enter = result.is_valid          # conviction is the gate
+                else:
+                    will_enter = result.is_valid and comp.final_score >= effective_min
                 # Always log score so we can see what's happening
                 # Fix #52 — surface proximity-skips with explicit tag so we can
                 # tell apart "score too low" from "scored A++ but ran past
@@ -1124,18 +1142,35 @@ class TradingCrew:
         open_pos = self.state.get_open_positions()
         consec   = self.state.get_consecutive_losses()
 
+        # Fix #161 (2026-05-18) — resolve probe-mode-aware capital/positions once
+        # per allocator call. Without this, flipping PROBE_MODE_ENABLED=True +
+        # PAPER_TRADING=False would size against the ₹15L paper capital instead
+        # of the ₹50k probe — a documented but unprotected ~30× risk footgun.
+        # All percent-of-capital sizing / kill-switch / lockout thresholds use
+        # `active_capital`; all max-position checks use `active_max_positions`.
+        try:
+            from config.settings import (
+                get_active_capital, get_active_max_positions,
+            )
+            active_capital       = get_active_capital()
+            active_max_positions = get_active_max_positions()
+        except Exception:
+            # Fail-safe: fall back to paper-mode constants if helpers are absent
+            active_capital       = CAPITAL
+            active_max_positions = MAX_POSITIONS
+
         # ── Daily-profit lockout (Fix #11) ───────────────────────────────────
         # Mirror of the kill-switch on the upside. Once today_pnl crosses the
-        # lockout ceiling (+3% of CAPITAL), no new entries — protect the day's
-        # gains. Existing positions still managed. Auto-resets at next session.
+        # lockout ceiling (+3% of active capital), no new entries — protect the
+        # day's gains. Existing positions still managed. Auto-resets at next session.
         today_pnl       = self.state.get_today_pnl()
-        lockout_ceiling = CAPITAL * DAILY_PROFIT_LOCKOUT_PCT
-        tighten_ceiling = CAPITAL * DAILY_PROFIT_TIGHTEN_PCT
+        lockout_ceiling = active_capital * DAILY_PROFIT_LOCKOUT_PCT
+        tighten_ceiling = active_capital * DAILY_PROFIT_TIGHTEN_PCT
 
         if today_pnl >= lockout_ceiling:
             print(f"[Allocator] 🟢 DAILY-PROFIT LOCKOUT — "
                   f"today P&L ₹{today_pnl:+,.0f} ≥ ceiling ₹{lockout_ceiling:+,.0f} "
-                  f"({DAILY_PROFIT_LOCKOUT_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"({DAILY_PROFIT_LOCKOUT_PCT*100:.1f}% of ₹{active_capital:,}). "
                   f"Done for the day — no new entries.")
             if not getattr(self, "_profit_lock_alerted_today", False):
                 try:
@@ -1155,14 +1190,14 @@ class TradingCrew:
             return
 
         # ── Daily-loss kill switch ───────────────────────────────────────────
-        # Hard floor: if today_pnl drops below -DAILY_LOSS_KILL_PCT × CAPITAL,
+        # Hard floor: if today_pnl drops below -DAILY_LOSS_KILL_PCT × active_capital,
         # block ALL new entries for the rest of the session. Existing positions
         # continue to be managed (SL/TP/trail/EOD). Auto-resets at next session.
-        kill_floor   = -CAPITAL * DAILY_LOSS_KILL_PCT
+        kill_floor   = -active_capital * DAILY_LOSS_KILL_PCT
         if today_pnl <= kill_floor:
             print(f"[Allocator] 🛑 DAILY-LOSS KILL SWITCH — "
                   f"today P&L ₹{today_pnl:+,.0f} ≤ floor ₹{kill_floor:+,.0f} "
-                  f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{active_capital:,}). "
                   f"Blocking new entries for rest of session.")
             # Telegram alert (idempotent — once-per-session)
             if not getattr(self, "_kill_switch_alerted_today", False):
@@ -1173,7 +1208,7 @@ class TradingCrew:
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📉 Today P&L: ₹{today_pnl:+,.0f}\n"
                         f"🚫 Floor: ₹{kill_floor:+,.0f} "
-                        f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,})\n"
+                        f"({DAILY_LOSS_KILL_PCT*100:.1f}% of ₹{active_capital:,})\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"No new entries today. Open positions still managed."
                     )
@@ -1192,7 +1227,7 @@ class TradingCrew:
             from config.settings import WEEKLY_LOSS_KILL_PCT
         except ImportError:
             WEEKLY_LOSS_KILL_PCT = 0.075
-        week_floor = -CAPITAL * WEEKLY_LOSS_KILL_PCT
+        week_floor = -active_capital * WEEKLY_LOSS_KILL_PCT
         try:
             week_pnl = self.state.get_week_pnl()
         except Exception as e:
@@ -1201,7 +1236,7 @@ class TradingCrew:
         if week_pnl <= week_floor:
             print(f"[Allocator] 🔴 WEEKLY-DRAWDOWN KILL — "
                   f"this week's P&L ₹{week_pnl:+,.0f} ≤ floor ₹{week_floor:+,.0f} "
-                  f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,}). "
+                  f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{active_capital:,}). "
                   f"BLOCKING new entries — manual review required.")
             if not getattr(self, "_week_kill_alerted_today", False):
                 try:
@@ -1211,7 +1246,7 @@ class TradingCrew:
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"📉 Week P&L: ₹{week_pnl:+,.0f}\n"
                         f"🚫 Floor: ₹{week_floor:+,.0f} "
-                        f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{CAPITAL:,})\n"
+                        f"({WEEKLY_LOSS_KILL_PCT*100:.1f}% of ₹{active_capital:,})\n"
                         f"━━━━━━━━━━━━━━━━━━━━\n"
                         f"All new entries blocked. Manual retrospective required."
                     )
@@ -1232,13 +1267,27 @@ class TradingCrew:
 
         # ── Tighten gate at +2R (Fix #11) — ride existing winners only ───────
         # Filter scored candidates to A+/A++ (≥8.0) once today_pnl crosses +2%.
-        # Continues to take A+ trades but rejects marginal A-grades from here.
-        if today_pnl >= tighten_ceiling:
+        # Fix #160 (2026-05-18): in conviction mode, conviction_tier isn't
+        # known until the per-symbol loop below runs. So we can't pre-filter
+        # the list. Pre-filtering by stub final_score >= 8.0 would drop every
+        # conviction admit silently (stub returns ~6). Defer the tighten check
+        # to inside the loop (see `_tighten_after_profit` check after conviction
+        # evaluation). Legacy path keeps pre-loop filter for back-compat.
+        try:
+            from config.settings import USE_CONVICTION_ENGINE as _UCE_T
+        except ImportError:
+            _UCE_T = False
+        _tighten_active = today_pnl >= tighten_ceiling
+        if _tighten_active and not _UCE_T:
             pre_count = len(scored)
             scored = [s for s in scored if s.get("final_score", 0) >= 8.0]
             if pre_count != len(scored):
                 print(f"[Allocator] 🟡 +2R PROFIT — tightened gate to 8.0; "
                       f"{pre_count} → {len(scored)} candidates remain")
+        elif _tighten_active:
+            # Conviction mode: defer per-symbol; print one-time banner
+            print(f"[Allocator] 🟡 +2R PROFIT — tighten active (S-tier only "
+                  f"in conviction mode)")
 
         # ── PHASE 0 CONVICTION ENGINE — additional gate (2026-05-11) ──────
         # Replaces the deleted ScoringEngine multipliers. Fires before all the
@@ -1256,8 +1305,8 @@ class TradingCrew:
             sector = s.get("sector", get_sector(sym))
 
             # Max positions
-            if len(open_pos) >= MAX_POSITIONS:
-                print(f"[Allocator] Max positions reached")
+            if len(open_pos) >= active_max_positions:
+                print(f"[Allocator] Max positions reached ({active_max_positions})")
                 break
 
             # Already in this stock
@@ -1302,6 +1351,14 @@ class TradingCrew:
                         s["conviction_risk"]    = conviction_result.risk_inr
                         s["conviction_target"]  = conviction_result.target_inr
                         s["conviction_size_mult"] = conviction_result.size_multiplier
+                        # Fix #160 — deferred +2R tighten check (see _allocate
+                        # preamble above). In conviction mode, only S-tier passes
+                        # after the +2R lockout threshold.
+                        if _tighten_active and conviction_result.tier != "S":
+                            print(f"[Allocator] {sym} +2R tighten — tier "
+                                  f"{conviction_result.tier} below S, skip")
+                            self._rej("post_profit_tighten")
+                            continue
                 except Exception as e:
                     # Conviction engine errors should NEVER block trading — fail open
                     # to the legacy path. The error gets logged for diagnosis.
@@ -1406,10 +1463,12 @@ class TradingCrew:
             s["tp1_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R1)
             s["tp2_price"]   = _calc_tp(s["entry_price"], s["stop_loss"], TARGET_R2)
 
-            # ── Score decay on aging signals (Fix #36 / A2) ──────────────────
-            # If the signal is older than 5 min, the bar that produced it is
-            # stale relative to the current tape. Drop final_score by 0.5 and
-            # re-check the gate.
+            # ── Signal-age skip (Fix #36 / A2 — restructured by Fix #160) ────
+            # If the signal bar is > 5 min old, the tape has likely moved past
+            # the structural condition the setup keyed on. In legacy mode this
+            # was a score-decay-and-re-gate; in conviction mode (where score
+            # is not a gate) it's a hard age cap. Either way: stale signal,
+            # don't act on it.
             try:
                 det_iso = s.get("detected_at")
                 if det_iso:
@@ -1418,15 +1477,24 @@ class TradingCrew:
                         det_dt = det_dt.replace(tzinfo=IST)
                     age_min = (_now_ist() - det_dt).total_seconds() / 60.0
                     if age_min > 5.0:
-                        decay = 0.5
-                        old_score = s.get("final_score", 0)
-                        s["final_score"] = max(0.0, old_score - decay)
-                        print(f"[Allocator] {sym} signal aged {age_min:.1f}m — "
-                              f"score decay {old_score:.1f} → {s['final_score']:.1f}")
-                        # Re-check gate; if it now fails, skip
-                        if s["final_score"] < MIN_SCORE_ENTRY:
-                            print(f"[Allocator] {sym} post-decay score below gate — skip")
-                            self._rej("score_decay_below_gate"); continue
+                        if _UCE_T:
+                            # Conviction mode: stale signal is stale signal.
+                            # Conviction already validated structure at the
+                            # quote-fetch above, but the entry/SL prices come
+                            # from a 5+ minute old bar — they're stale.
+                            print(f"[Allocator] {sym} signal aged {age_min:.1f}m "
+                                  f"> 5m — skip (stale entry/SL prices)")
+                            self._rej("signal_too_old"); continue
+                        else:
+                            # Legacy path: decay score and re-gate
+                            decay = 0.5
+                            old_score = s.get("final_score", 0)
+                            s["final_score"] = max(0.0, old_score - decay)
+                            print(f"[Allocator] {sym} signal aged {age_min:.1f}m — "
+                                  f"score decay {old_score:.1f} → {s['final_score']:.1f}")
+                            if s["final_score"] < MIN_SCORE_ENTRY:
+                                print(f"[Allocator] {sym} post-decay score below gate — skip")
+                                self._rej("score_decay_below_gate"); continue
             except Exception:
                 pass
 
@@ -1441,17 +1509,26 @@ class TradingCrew:
             tier_idx     = min(consec, len(LOSER_STREAK_SIZE_TIERS) - 1)
             multiplier   = LOSER_STREAK_SIZE_TIERS[tier_idx]
             conservative = consec >= MAX_CONSECUTIVE_LOSSES   # kept for downstream flags
-            # Fix #23 (A6) — score-based sizing tier (combines multiplicatively
-            # with conservative-mode dampener). A++ full, A+ 75%, A 50%, B 25%.
-            grade_tier   = SCORE_SIZE_TIERS.get(s.get("grade", ""), 0.5)
+            # Fix #160 (2026-05-18): grade-based sizing tier was double-scaling
+            # in conviction mode — conviction already provides `size_multiplier`
+            # via `conviction_size_mult` (S=1.0, A=0.7, B=0.4, decoupling=0.5).
+            # Multiplying by SCORE_SIZE_TIERS[grade] on top gave ~0.25x sizing
+            # for A-tier admits (legacy grade tier from stub score ~6 = "B" tier
+            # = 0.25). In conviction mode: use conviction_size_mult directly.
+            if _UCE_T and "conviction_size_mult" in s:
+                grade_tier = float(s.get("conviction_size_mult", 1.0))
+            else:
+                # Fix #23 (A6) — legacy grade-based sizing tier.
+                grade_tier = SCORE_SIZE_TIERS.get(s.get("grade", ""), 0.5)
             # Fix #26 (C1) — second strike on same stock today → half size
             second_dampen = 0.5 if second_strike else 1.0
-            risk_amount  = CAPITAL * RISK_PER_TRADE_PCT * multiplier * grade_tier * second_dampen
+            risk_amount  = active_capital * RISK_PER_TRADE_PCT * multiplier * grade_tier * second_dampen
             if second_strike:
                 print(f"[Allocator] {sym} 2nd strike today — sizing dampened ×0.5")
             qty          = floor(risk_amount / dist)
-            # Cap 1: max 20% of capital per position (prevents 1 trade using all capital)
-            max_pos_val  = CAPITAL * MAX_POSITION_VALUE_PCT
+            # Cap 1: max 10% of active capital per position (prevents 1 trade
+            # using all capital — and stays correct under probe mode)
+            max_pos_val  = active_capital * MAX_POSITION_VALUE_PCT
             qty          = min(qty, floor(max_pos_val / s["entry_price"]))
             # Cap 2: can't exceed available capital
             qty          = min(qty, floor(self.state.get_available_capital() / s["entry_price"]))
@@ -1466,10 +1543,13 @@ class TradingCrew:
             # down to 1-2 shares. A 1-share trade can't earn the ₹1500-3000
             # net target — the cost stack alone (~₹40-200/leg) leaves nothing.
             # Reject below thresholds and watchlist instead.
+            # Fix #161: thresholds now scale with active_capital so the probe
+            # mode (₹50k) doesn't apply paper-sized floors that would block
+            # every probe trade.
             risk_taken = qty * dist
             position_val = qty * s["entry_price"]
-            min_risk = CAPITAL * MIN_RISK_PER_TRADE_PCT
-            min_pos  = CAPITAL * MIN_POSITION_VALUE_PCT
+            min_risk = active_capital * MIN_RISK_PER_TRADE_PCT
+            min_pos  = active_capital * MIN_POSITION_VALUE_PCT
             if risk_taken < min_risk or position_val < min_pos:
                 reason_skip = (f"qty={qty} risk=₹{risk_taken:.0f} pos=₹{position_val:.0f} — "
                                f"below floor (need risk≥₹{min_risk:.0f} pos≥₹{min_pos:.0f}) — watchlist")
@@ -1683,11 +1763,18 @@ class TradingCrew:
                                     try:
                                         if not PAPER_TRADING and getattr(p, "sl_order_id", None):
                                             self.kite.cancel_order(p.sl_order_id)
+                                            # Fix #159 (2026-05-18): place_sl_order signature is
+                                            # (symbol, transaction, quantity, trigger, price) — the
+                                            # original kwargs (trigger_price/direction) would TypeError
+                                            # on every live trail; the broad except below would hide it
+                                            # and the SL would stay at the original stop.
+                                            sl_tx = "SELL" if p.direction == "long" else "BUY"
                                             new_oid = self.kite.place_sl_order(
                                                 symbol=p.symbol,
+                                                transaction=sl_tx,
                                                 quantity=p.quantity_remaining,
-                                                trigger_price=new_sl,
-                                                direction=p.direction,
+                                                trigger=new_sl,
+                                                price=new_sl,
                                             )
                                             if new_oid:
                                                 self.state.update_sl_order_id(p.id, new_oid)
@@ -1761,11 +1848,14 @@ class TradingCrew:
                             try:
                                 if not PAPER_TRADING and getattr(p, "sl_order_id", None):
                                     self.kite.cancel_order(p.sl_order_id)
+                                    # Fix #159 (2026-05-18): same kwargs bug as PreTP1Trail above.
+                                    sl_tx = "SELL" if p.direction == "long" else "BUY"
                                     new_oid = self.kite.place_sl_order(
                                         symbol=p.symbol,
+                                        transaction=sl_tx,
                                         quantity=p.quantity_remaining,
-                                        trigger_price=new_sl,
-                                        direction=p.direction,
+                                        trigger=new_sl,
+                                        price=new_sl,
                                     )
                                     if new_oid:
                                         self.state.update_sl_order_id(p.id, new_oid)
