@@ -399,6 +399,60 @@ def sanity_clock_categories_gone():
         _ok("HOUR_GATE_NUDGES import removed from crew.py")
 
 
+def sanity_priority_gate_disabled_in_conviction():
+    _hdr("SANITY 13 — Priority+Confluence gate bypassed in conviction mode (Fix #173)")
+    src = (ROOT / "agents/crew.py").read_text()
+    # Check the new conditional bypass is in place
+    if "if (not _UCE_PRI" in src and "MOMENTUM_BO_REQUIRE_PRIORITY" in src:
+        _ok("MOMENTUM_BO_REQUIRE_PRIORITY check is gated on `not _UCE_PRI`")
+    else:
+        _fail("priority gate is NOT conditional on USE_CONVICTION_ENGINE")
+    # Quick reasoning check
+    if "Three-Laws Law-2 violation" in src and "Mathematically impossible" in src:
+        _ok("Fix #173 has explanatory comment with Three-Laws context")
+    else:
+        _fail("Fix #173 explanatory comment missing or moved")
+
+
+def sanity_runway_softens_wall():
+    _hdr("SANITY 14 — NO_NEW_ENTRY_AFTER softens to 14:55 under Runway Check (Fix #174)")
+    src = (ROOT / "agents/crew.py").read_text()
+    if "from config.settings import RUNWAY_CHECK_ENABLED as _RWC" in src:
+        _ok("Runway-check flag read in _ok_to_trade")
+    else:
+        _fail("_ok_to_trade does NOT consult RUNWAY_CHECK_ENABLED")
+    if "no_entry = dtime(14, 55)" in src:
+        _ok("late-session wall softens to 14:55 when runway check is on")
+    else:
+        _fail("14:55 softened wall not found")
+
+
+def sanity_tier_histogram():
+    _hdr("SANITY 15 — Conviction tier histogram (Fix #175)")
+    src = (ROOT / "agents/crew.py").read_text()
+    if "self._tier_hist: dict[str, int] = {}" in src:
+        _ok("_tier_hist initialized in __init__")
+    else:
+        _fail("_tier_hist not initialized")
+    if "self._tier_hist.clear()" in src:
+        _ok("_tier_hist cleared at top of run_tick")
+    else:
+        _fail("_tier_hist clear missing in run_tick")
+    if 'self._tier_hist["SKIP"]' in src and 'self._tier_hist[conviction_result.tier]' in src:
+        _ok("SKIP and tier counters both wired in _allocate")
+    else:
+        _fail("tier counters missing in _allocate")
+    if "tier distribution this tick" in src:
+        _ok("per-tick distribution log line wired in _tick_summary")
+    else:
+        _fail("tier distribution print line missing")
+    # Also verify the rejection-key normalization
+    if "bucket_tokens = []" in src and 'self._rej(f"conviction_{bucket}")' in src:
+        _ok("conviction SKIP reasons collapse to type buckets (not N-of-1)")
+    else:
+        _fail("conviction reason normalization missing")
+
+
 def sanity_trade_state_delete_row():
     _hdr("SANITY 12 — trade_state.delete_position_row works (Fix #170 storage)")
     # Build a temp DB, write a fake position, delete it, verify it's gone.
@@ -475,6 +529,9 @@ def main():
     sanity_crew_place_sl_order_kwargs()
     sanity_discovery_chunk_sleep()
     sanity_clock_categories_gone()
+    sanity_priority_gate_disabled_in_conviction()
+    sanity_runway_softens_wall()
+    sanity_tier_histogram()
     sanity_trade_state_delete_row()
 
     print()

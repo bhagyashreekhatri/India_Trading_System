@@ -239,6 +239,11 @@ class TradingCrew:
         # TP1 fire, full exit) intentionally bypass the cache — they need a
         # live LTP at the moment of order placement.
         self._quote_cache: dict[str, dict] = {}
+        # Fix #175 (2026-05-18) — per-tick conviction-tier histogram. Tells
+        # the operator at a glance how many candidates landed at each tier
+        # (S / A / B / SKIP) without grepping per-candidate [Conviction] lines.
+        # Printed in _tick_summary; cleared at top of run_tick.
+        self._tier_hist: dict[str, int] = {}
         # Fix #39 — per-tick rejection counters (which gate killed each candidate).
         # Cleared at the start of every tick; printed at end.
         self._reject_counts: dict[str, int] = {}
@@ -308,6 +313,7 @@ class TradingCrew:
         self._vwap_cache.clear()   # Fix #8 — fresh VWAPs per tick
         self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
         self._quote_cache.clear()  # Fix #168 — fresh per-tick quote cache
+        self._tier_hist.clear()    # Fix #175 — fresh conviction-tier histogram
         self._entries_this_tick = 0  # Phase 2.0 B6 — count actual entries, not scorer passes
         now = _now_ist()
         print(f"\n{'='*60}")
@@ -447,9 +453,24 @@ class TradingCrew:
     def _ok_to_trade(self, now: datetime) -> bool:
         t = now.time()
         market_open = dtime(9, 15 + NO_ENTRY_BEFORE_MIN)   # 9:20
-        no_entry    = _parse_time(NO_NEW_ENTRY_AFTER)       # 14:45
-        mid_start   = _parse_time(MIDDAY_AVOID_START)       # 13:00
-        mid_end     = _parse_time(MIDDAY_AVOID_END)         # 14:00
+
+        # Fix #174 (2026-05-18) — soften the late-session wall when Runway
+        # Check is the authority. Phase 2.6 designed runway_check to REPLACE
+        # the blunt 14:45 wall with per-setup `median_TTP1 × 1.5 ≤ remaining`,
+        # but the wall was still hard-coded here. With RUNWAY_CHECK_ENABLED
+        # (flipped True by Fix #171), runway_check has its own absolute
+        # 20-min-before-EOD floor (= 14:55 given EOD_CLOSE_TIME=15:15). So
+        # we widen the hard wall to 14:55 and let runway_check decide which
+        # setups have enough runway. Net: +10 min of valid entry window per
+        # session, and runway_check actually gets to run on late admits.
+        try:
+            from config.settings import RUNWAY_CHECK_ENABLED as _RWC
+        except ImportError:
+            _RWC = False
+        if _RWC:
+            no_entry = dtime(14, 55)   # runway_check's absolute floor
+        else:
+            no_entry = _parse_time(NO_NEW_ENTRY_AFTER)   # legacy 14:45 hard wall
 
         if t < market_open:
             return False
@@ -872,12 +893,32 @@ class TradingCrew:
                     self._rej("momentum_low_volume"); continue
 
                 # ── Fix #56 / Phase A — momentum priority filter ────────────
-                # Beyond RVOL, require either (a) confluence ≥ 2 (another
-                # detector also fired on this name) OR (b) sector in top-3
-                # by intraday breadth. This kills marginal momentum trades
-                # that have no second confirmation. Goal: mean R per trade
-                # from +0.075 → +0.30+.
-                if setup_type == "momentum_breakout" and MOMENTUM_BO_REQUIRE_PRIORITY:
+                # ── DISABLED IN CONVICTION MODE (Fix #173, 2026-05-18) ──────
+                # Original intent (Phase A, 280-trade audit, pre-conviction):
+                # require either confluence ≥ 2 OR sector in top-3 breadth.
+                # WHY DISABLED:
+                #   1. Three-Laws Law-2 violation — pre-filters on a hardcoded
+                #      top-N sector list (`breadth_data.get("top_sectors")` is
+                #      a list of 3 sector strings).
+                #   2. Mathematically impossible to clear "confluence ≥ 2"
+                #      since SETUP_DISARMED_LIST disables 6 of 7 setups; only
+                #      momentum_breakout fires, so confluence_count is always 1.
+                #      The OR collapses to pure sector-priority.
+                #   3. Redundant in conviction mode: sector strength is read
+                #      structurally per-bar via stock_decoupling's sector-index
+                #      check and the day-type classifier. Pre-filtering kills
+                #      legitimate trades (e.g. ZEEL on 2026-05-18 had RVOL 2.13,
+                #      momentum_breakout, valid structure — silently dropped
+                #      because MEDIA wasn't in [IT, PHARMA, FINANCIAL]).
+                # Behaviour: filter skipped entirely when USE_CONVICTION_ENGINE
+                # is the authority. Legacy path still applies it.
+                try:
+                    from config.settings import USE_CONVICTION_ENGINE as _UCE_PRI
+                except ImportError:
+                    _UCE_PRI = False
+                if (not _UCE_PRI
+                        and setup_type == "momentum_breakout"
+                        and MOMENTUM_BO_REQUIRE_PRIORITY):
                     conf_n     = s.get("confluence_count", 1)
                     sym_sector = s.get("sector", get_sector(sym))
                     top_secs   = breadth_data.get("top_sectors", []) or []
@@ -1392,10 +1433,29 @@ class TradingCrew:
                     )
                     if conviction_result.tier == "SKIP":
                         print(f"[Conviction] {sym} SKIP — {conviction_result.reasoning}")
-                        self._rej(f"conviction_{conviction_result.reasoning[:30]}")
+                        # Fix #175 (2026-05-18): bucket SKIPs by REASON TYPE,
+                        # not by the value-laden reasoning string. Before,
+                        # `conviction_stock_extended_off_hod_2.34%` and
+                        # `..._2.41%` were separate N-of-1 buckets. Now both
+                        # collapse to `conviction_stock_extended_off_hod`, so
+                        # the per-tick rejection histogram is readable.
+                        reason_root = (conviction_result.reasoning or "unknown").split("_")
+                        # Take leading non-numeric tokens (e.g.,
+                        # ["stock", "extended", "off", "hod", "2.34%"] → "stock_extended_off_hod")
+                        bucket_tokens = []
+                        for tok in reason_root:
+                            if any(c.isdigit() for c in tok):
+                                break
+                            bucket_tokens.append(tok)
+                        bucket = "_".join(bucket_tokens) if bucket_tokens else reason_root[0]
+                        self._rej(f"conviction_{bucket}")
+                        # Also track tier=SKIP for the histogram
+                        self._tier_hist["SKIP"] = self._tier_hist.get("SKIP", 0) + 1
                         continue
                     else:
                         print(f"[Conviction] {sym} TIER_{conviction_result.tier} — {conviction_result.reasoning}")
+                        # Fix #175 — tally tier for the per-tick distribution
+                        self._tier_hist[conviction_result.tier] = self._tier_hist.get(conviction_result.tier, 0) + 1
                         # Stash result on the scored dict so sizing can use it later
                         s["conviction_tier"]    = conviction_result.tier
                         s["conviction_risk"]    = conviction_result.risk_inr
@@ -2286,6 +2346,22 @@ class TradingCrew:
               f"{scored} scored | {entered} entered | "
               f"{s['open_positions']} open | "
               f"P&L ₹{s['today_pnl']:+,.0f}{best_str}")
+
+        # Fix #175 (2026-05-18) — per-tick conviction tier distribution. One
+        # line tells the operator how many candidates passed conviction (and
+        # at which tier) vs were SKIPped. Helps distinguish "macro is RED so
+        # idle is correct" from "filter is wrong, real signals being blocked".
+        if self._tier_hist:
+            order = ["S", "A", "B", "SKIP"]
+            parts = []
+            for tier in order:
+                if self._tier_hist.get(tier, 0) > 0:
+                    parts.append(f"{tier}={self._tier_hist[tier]}")
+            for tier, count in self._tier_hist.items():
+                if tier not in order and count > 0:
+                    parts.append(f"{tier}={count}")
+            if parts:
+                print(f"[Conviction] tier distribution this tick: {', '.join(parts)}")
 
         # Fix #39 + #49 — print per-stage rejection summary EVERY tick (even
         # if empty), so the diagnostic is always visible in journalctl.
