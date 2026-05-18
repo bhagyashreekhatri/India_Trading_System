@@ -469,39 +469,62 @@ class DiscoveryEngine:
         if not pool:
             return []
 
-        # Batch in chunks of 500 (Kite's quote API hard limit), with a 0.6s
-        # sleep between chunks. Phase 2.1.3: Cloudflare started 403'ing the
-        # /quote endpoint with a "Just a moment..." challenge page when 6+
-        # 500-name chunks fired back-to-back at ~50ms intervals — the URL
-        # length and request burst together looked bot-like. A sub-second
-        # space between chunks lets each request fully drain and avoids
-        # the burst signature without slowing total scan time meaningfully
-        # (3 chunks × 0.6s = 1.8s overhead on a 30-60s scan).
+        # Batch in chunks of 500 (Kite's quote API hard limit), with throttle
+        # and per-chunk retry. Phase 2.1.3-2.1.4 story:
+        #   • v3 (0.6s sleep between chunks) defused the simultaneous-burst CF
+        #     signature, but chunk 0 of every scan still got CF-challenged —
+        #     the single _get_nifty_change_pct() call right before the loop
+        #     wasn't enough warmup, so chunk 0's 500-symbol GET tripped a
+        #     "new client, first big request" gate. Chunks 1..N (0.6s apart)
+        #     consistently went through.
+        #   • v4 adds per-chunk retry-with-backoff: if a chunk returns empty
+        #     (signature of a CF challenge HTML response), wait 2-3s and retry
+        #     once. That's typically enough for CF to consider us established
+        #     traffic and let the retry through.
+        #   • The "2 consecutive empties" abort still applies AFTER retry
+        #     fails, so a genuine sustained CF block still cuts the scan short.
         CHUNK = 500
         SLEEP_BETWEEN_CHUNKS_SEC = 0.6
+        RETRY_BACKOFF_SEC = 2.5
         nifty_change = self._get_nifty_change_pct()
 
-        # If two consecutive chunks come back empty, abort the rest of the
-        # scan — almost certainly Cloudflare is blocking everything now and
-        # further calls just dig the hole deeper.
         consecutive_empty = 0
         import time
+
+        def _fetch_chunk(batch: list[str]) -> dict:
+            """One quote call. Returns {} on any error so the caller's
+            empty-counter handles retry / abort logic."""
+            try:
+                return self.kite.get_quotes(batch) or {}
+            except Exception as e:
+                print(f"[Discovery] get_quotes raised: {e}")
+                return {}
 
         chunks = list(range(0, len(pool), CHUNK))
         for chunk_idx, i in enumerate(chunks):
             batch = pool[i : i + CHUNK]
-            try:
-                quotes = self.kite.get_quotes(batch)
-            except Exception as e:
-                print(f"[Discovery] get_quotes failed on chunk {i}-{i+CHUNK}: {e}")
-                quotes = {}
+            quotes = _fetch_chunk(batch)
+
+            # Retry once on empty — most often a CF challenge that resolves
+            # itself if we give it a couple seconds (subsequent chunks in
+            # the same scan typically succeed, so retry of this chunk should
+            # too).
+            if not quotes:
+                print(f"[Discovery] chunk {chunk_idx+1}/{len(chunks)} empty — "
+                      f"retrying in {RETRY_BACKOFF_SEC}s")
+                time.sleep(RETRY_BACKOFF_SEC)
+                quotes = _fetch_chunk(batch)
+                if quotes:
+                    print(f"[Discovery] chunk {chunk_idx+1} retry succeeded "
+                          f"({len(quotes)} quotes)")
 
             if not quotes:
                 consecutive_empty += 1
                 if consecutive_empty >= 2:
                     print(f"[Discovery] aborting scan — 2 consecutive empty "
-                          f"chunks (Cloudflare block likely). "
-                          f"Scanned {chunk_idx}/{len(chunks)} chunks.")
+                          f"chunks even after retry. "
+                          f"Scanned {chunk_idx}/{len(chunks)} chunks; "
+                          f"will resume on next scan.")
                     break
             else:
                 consecutive_empty = 0
@@ -510,8 +533,7 @@ class DiscoveryEngine:
                     if cand is not None:
                         survivors.append(cand)
 
-            # Throttle between chunks. Skip the sleep after the final chunk
-            # so we don't add latency to the last quote → first-candidate gap.
+            # Throttle between chunks. Skip the sleep after the final chunk.
             if chunk_idx < len(chunks) - 1:
                 time.sleep(SLEEP_BETWEEN_CHUNKS_SEC)
 
