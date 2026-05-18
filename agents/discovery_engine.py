@@ -43,10 +43,52 @@ from config.settings import TIMEZONE
 IST = ZoneInfo(TIMEZONE)
 
 # Patterns for non-EQ instruments to exclude from the candidate pool.
-_NON_EQ_NAME_RE = re.compile(
-    r"\b(ETF|BEES|LIQUID|GILT|NIFTY|SENSEX|JUNIOR|GOLD|SILVER|GROWW)\b",
+#
+# 2026-05-18 v2: Kite's bulk instruments(NSE) returns ~9780 rows ALL tagged
+# with instrument_type="EQ", but most are actually:
+#   • Indices: "NIFTY50 PR 2X LEV", "INDIA VIX" (have spaces)
+#   • Debt: "115VCCL31A-N0", "785TCHFL29-N0" (start with digits, -N\d suffix)
+#   • SME / TT segment: "SIMCA-ST" (-ST suffix)
+#   • ETFs / sovereign gold bonds: SBIETFNIF50, GOLDBEES etc.
+# The first filter rejected only 98 names — pool came out at 9,538 (10× too many).
+# This expanded set targets ~1500 actual NSE cash-equity names.
+
+# SUBSTRING markers — these in ANY position mean non-EQ. ETF and BEES are
+# unambiguous (no real NSE EQ name contains them).
+_NON_EQ_SUBSTR_RE = re.compile(r"(ETF|BEES)", re.IGNORECASE)
+
+# PREFIX markers — name STARTS with one of these. Cannot use substring on
+# these because real EQ names exist with these letters elsewhere (e.g.
+# INDIAMART, BHARATFORG, GOLDIAM). The leading-anchored regex avoids that.
+#
+# We do NOT include GOLD/SILVER/LIQUID/JUNIOR/GROWW/INDIA/BHARAT as prefixes
+# because (a) the BEES/ETF substring catches the ones we care about and (b)
+# real EQ names start with most of these strings.
+_NON_EQ_PREFIX_RE = re.compile(
+    r"^(NIFTY|SENSEX|VIX|SGB|TBILL|GS\d|GOI|CGB|CPSE|BHARAT22)",
     re.IGNORECASE,
 )
+
+# Combined "non-EQ name" check exposed for the filter pipeline.
+def _is_non_eq_name(tsym: str) -> bool:
+    return bool(_NON_EQ_SUBSTR_RE.search(tsym) or _NON_EQ_PREFIX_RE.match(tsym))
+
+# Reject names ending in known non-EQ-cash suffixes:
+#   -ST     : SME segment (small-cap trade-to-trade — illiquid)
+#   -N0..N9 : NCDs / debt notes
+#   -SG/-GS : government securities suffix variants
+#   -BE     : "Book Entry" — trade-to-trade equity (no intraday)
+#   -BZ     : Surveillance segment T2T
+#   -RT     : Rights
+#   -BL     : Block deal
+_NON_EQ_SUFFIX_RE = re.compile(
+    r"-(ST|N\d|SG|GS|RT|BL|R\d|YL|YB|BC|BE|BZ|MF|ZC|ME|ML)\d*$"
+)
+
+# Real NSE EQ tradingsymbols match this shape:
+#   start with letter, then alpha+digit+&, optional -ALPHANUM segment suffix.
+# Rejects "INDIA VIX" (space), "115VCCL31A-N0" (leading digit).
+_EQ_SHAPE_RE = re.compile(r"^[A-Z][A-Z0-9&]*(-[A-Z0-9]+)?$")
 
 DEFAULT_BLACKLIST_PATH = "discovery_blacklist.json"
 DEFAULT_DAILY_CTX_PATH = "discovery_daily_ctx.json"
@@ -209,11 +251,14 @@ class DiscoveryEngine:
             return 0
 
         # Diagnostic counters — let us see exactly which filter rejected what
-        # the next time pool comes out empty.
+        # the next time pool size looks wrong.
         n_raw = len(instruments)
         n_no_tsym = 0
         n_non_eq_type = 0
         n_etf_pattern = 0
+        n_bad_segment = 0
+        n_bad_shape = 0       # leading digit / space / non-ASCII (debt / indices)
+        n_bad_suffix = 0      # -ST / -N\d (SME / debt notes)
         n_in_core = 0
         pool: list[str] = []
 
@@ -221,13 +266,32 @@ class DiscoveryEngine:
             # Tolerate dict-of-bytes (older SDK) and dict-of-str alike.
             tsym = _str(inst.get("tradingsymbol", ""))
             itype = _str(inst.get("instrument_type", ""))
+            seg = _str(inst.get("segment", ""))
             if not tsym:
                 n_no_tsym += 1
                 continue
             if itype != "EQ":
                 n_non_eq_type += 1
                 continue
-            if _NON_EQ_NAME_RE.search(tsym):
+            # Segment must be exactly "NSE" (cash equity). Excludes NSE-INDEX,
+            # NSEINDEX, NSE-SME, NSE-DEBT, NSE-RIGHTS etc.
+            if seg and seg != "NSE":
+                n_bad_segment += 1
+                continue
+            # Shape: ASCII alpha+digit+&, optional -ALPHANUM segment suffix.
+            # Rejects "INDIA VIX" (space), "115VCCL31A-N0" (leading digit).
+            if not _EQ_SHAPE_RE.match(tsym):
+                n_bad_shape += 1
+                continue
+            # Suffix: reject SME (-ST), debt notes (-N0..-N9), trading-restricted (-BE/-BZ),
+            # rights/partly-paid/etc.
+            if _NON_EQ_SUFFIX_RE.search(tsym):
+                n_bad_suffix += 1
+                continue
+            # Name pattern: reject indices/ETFs/sovereign-bond instruments.
+            # Uses substring match for ETF/BEES and prefix match for NIFTY/
+            # SENSEX/SGB/TBILL/etc. See _is_non_eq_name docstring.
+            if _is_non_eq_name(tsym):
                 n_etf_pattern += 1
                 continue
             if tsym in self.core_universe:
@@ -239,7 +303,9 @@ class DiscoveryEngine:
         print(
             f"[Discovery] seeded candidate pool — {len(pool)} names "
             f"(raw={n_raw}, no-tsym={n_no_tsym}, non-EQ-type={n_non_eq_type}, "
-            f"ETF-pattern={n_etf_pattern}, in-core={n_in_core})"
+            f"bad-segment={n_bad_segment}, bad-shape={n_bad_shape}, "
+            f"bad-suffix={n_bad_suffix}, ETF-pattern={n_etf_pattern}, "
+            f"in-core={n_in_core})"
         )
         # Sample a few names so we can eyeball the result in logs
         if pool:
