@@ -143,15 +143,18 @@ class DiscoveryEngine:
     def seed_candidate_pool(self) -> int:
         """
         Pull NSE EQ instruments from Kite (one call) and filter:
-          - series == EQ  (excludes BE series + bonds + warrants)
+          - instrument_type == EQ  (excludes FUT/CE/PE/NSEIDX etc.)
           - tradingsymbol does not match ETF/BEES/GILT/NIFTY patterns
           - not already in core_universe (those go through the main path)
 
         The exchange filter is enforced by the `instruments("NSE")` call
-        itself — no need to re-check segment field (Kite's segment string
-        for cash equity is "NSE" but defensive double-check was rejecting
-        every row when the field type was bytes vs str in older SDK versions,
-        per 2026-05-18 incident — boot logged "0 NSE EQ names" with no error).
+        itself — no need to re-check segment field.
+
+        2026-05-18 fix: was using `series` field which the Kite SDK's bulk
+        `instruments()` endpoint does NOT return (that field is only in
+        `search_instruments` responses). The correct field for cash-equity
+        identification in the bulk feed is `instrument_type` (EQ/FUT/CE/PE).
+        Boot log showed "non-EQ-series=9780" rejecting every row.
 
         Returns the number of names seeded into the candidate pool.
         Failure is non-fatal — pool stays empty; discovery silently no-ops.
@@ -189,20 +192,20 @@ class DiscoveryEngine:
         # the next time pool comes out empty.
         n_raw = len(instruments)
         n_no_tsym = 0
-        n_non_eq_series = 0
+        n_non_eq_type = 0
         n_etf_pattern = 0
         n_in_core = 0
         pool: list[str] = []
 
         for inst in instruments:
             # Tolerate dict-of-bytes (older SDK) and dict-of-str alike.
-            tsym  = _str(inst.get("tradingsymbol", ""))
-            series = _str(inst.get("series", ""))
+            tsym = _str(inst.get("tradingsymbol", ""))
+            itype = _str(inst.get("instrument_type", ""))
             if not tsym:
                 n_no_tsym += 1
                 continue
-            if series != "EQ":
-                n_non_eq_series += 1
+            if itype != "EQ":
+                n_non_eq_type += 1
                 continue
             if _NON_EQ_NAME_RE.search(tsym):
                 n_etf_pattern += 1
@@ -215,7 +218,7 @@ class DiscoveryEngine:
         self._candidate_pool = pool
         print(
             f"[Discovery] seeded candidate pool — {len(pool)} names "
-            f"(raw={n_raw}, no-tsym={n_no_tsym}, non-EQ-series={n_non_eq_series}, "
+            f"(raw={n_raw}, no-tsym={n_no_tsym}, non-EQ-type={n_non_eq_type}, "
             f"ETF-pattern={n_etf_pattern}, in-core={n_in_core})"
         )
         # Sample a few names so we can eyeball the result in logs
