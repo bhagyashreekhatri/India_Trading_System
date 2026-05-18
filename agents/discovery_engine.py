@@ -51,6 +51,19 @@ _NON_EQ_NAME_RE = re.compile(
 DEFAULT_BLACKLIST_PATH = "discovery_blacklist.json"
 
 
+def _str(v) -> str:
+    """Coerce Kite SDK field to str. Older Kite SDK versions returned
+    instrument field values as bytes; newer returns str. Defensive."""
+    if v is None:
+        return ""
+    if isinstance(v, bytes):
+        try:
+            return v.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    return str(v)
+
+
 # ─── Dataclasses ──────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -130,41 +143,85 @@ class DiscoveryEngine:
     def seed_candidate_pool(self) -> int:
         """
         Pull NSE EQ instruments from Kite (one call) and filter:
-          - segment == NSE and series == EQ
+          - series == EQ  (excludes BE series + bonds + warrants)
           - tradingsymbol does not match ETF/BEES/GILT/NIFTY patterns
           - not already in core_universe (those go through the main path)
+
+        The exchange filter is enforced by the `instruments("NSE")` call
+        itself — no need to re-check segment field (Kite's segment string
+        for cash equity is "NSE" but defensive double-check was rejecting
+        every row when the field type was bytes vs str in older SDK versions,
+        per 2026-05-18 incident — boot logged "0 NSE EQ names" with no error).
 
         Returns the number of names seeded into the candidate pool.
         Failure is non-fatal — pool stays empty; discovery silently no-ops.
         """
-        try:
-            raw_kite = getattr(self.kite, "kite", None) or self.kite
-            instruments = raw_kite.instruments("NSE")
-        except Exception as e:
-            print(f"[Discovery] seed_candidate_pool: instruments() failed: {e}")
+        # Resolve the underlying KiteConnect handle. KiteDataClient stores it
+        # at `self.kite.kite`; bare KiteConnect (in tests) is the object itself.
+        # Use explicit truthy check so None or missing attribute falls back.
+        raw_kite = getattr(self.kite, "kite", None)
+        if raw_kite is None:
+            raw_kite = self.kite
+
+        # Sanity — confirm we have a callable instruments() method
+        if not hasattr(raw_kite, "instruments"):
+            print(f"[Discovery] seed_candidate_pool: kite handle {type(raw_kite).__name__} "
+                  f"has no .instruments() method — pool stays empty")
             self._candidate_pool = []
             return 0
 
+        try:
+            instruments = raw_kite.instruments("NSE")
+        except Exception as e:
+            print(f"[Discovery] seed_candidate_pool: instruments() raised: "
+                  f"{type(e).__name__}: {e}")
+            self._candidate_pool = []
+            return 0
+
+        if not instruments:
+            print(f"[Discovery] seed_candidate_pool: instruments() returned EMPTY "
+                  f"(type={type(instruments).__name__}). Kite rate limit or stale "
+                  f"token? Pool stays empty.")
+            self._candidate_pool = []
+            return 0
+
+        # Diagnostic counters — let us see exactly which filter rejected what
+        # the next time pool comes out empty.
+        n_raw = len(instruments)
+        n_no_tsym = 0
+        n_non_eq_series = 0
+        n_etf_pattern = 0
+        n_in_core = 0
         pool: list[str] = []
+
         for inst in instruments:
-            tsym  = inst.get("tradingsymbol", "")
-            series = inst.get("series", "")
-            segment = inst.get("segment", "")
+            # Tolerate dict-of-bytes (older SDK) and dict-of-str alike.
+            tsym  = _str(inst.get("tradingsymbol", ""))
+            series = _str(inst.get("series", ""))
             if not tsym:
+                n_no_tsym += 1
                 continue
             if series != "EQ":
-                continue
-            if segment != "NSE":
+                n_non_eq_series += 1
                 continue
             if _NON_EQ_NAME_RE.search(tsym):
+                n_etf_pattern += 1
                 continue
             if tsym in self.core_universe:
+                n_in_core += 1
                 continue
             pool.append(tsym)
 
         self._candidate_pool = pool
-        print(f"[Discovery] seeded candidate pool — {len(pool)} NSE EQ "
-              f"names (excluding {len(self.core_universe)} core + ETFs/indices)")
+        print(
+            f"[Discovery] seeded candidate pool — {len(pool)} names "
+            f"(raw={n_raw}, no-tsym={n_no_tsym}, non-EQ-series={n_non_eq_series}, "
+            f"ETF-pattern={n_etf_pattern}, in-core={n_in_core})"
+        )
+        # Sample a few names so we can eyeball the result in logs
+        if pool:
+            sample = pool[:5] + ["..."] + pool[-3:] if len(pool) > 10 else pool
+            print(f"[Discovery] sample: {sample}")
         return len(pool)
 
     # ── Scan ─────────────────────────────────────────────────────────────────
