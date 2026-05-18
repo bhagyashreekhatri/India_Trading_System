@@ -74,15 +74,25 @@ def _is_non_eq_name(tsym: str) -> bool:
     return bool(_NON_EQ_SUBSTR_RE.search(tsym) or _NON_EQ_PREFIX_RE.match(tsym))
 
 # Reject names ending in known non-EQ-cash suffixes:
-#   -ST     : SME segment (small-cap trade-to-trade — illiquid)
-#   -N0..N9 : NCDs / debt notes
+#   -ST     : SME segment trade-to-trade
+#   -SM     : SME segment (small-cap — illiquid, ineligible for intraday)
+#   -N\d    : NCDs / debt notes        (e.g. 115VCCL31A-N0)
 #   -SG/-GS : government securities suffix variants
 #   -BE     : "Book Entry" — trade-to-trade equity (no intraday)
 #   -BZ     : Surveillance segment T2T
 #   -RT     : Rights
+#   -RR     : REIT / Rights Renounce  (e.g. BIRET-RR, BAGMANE-RR)
+#   -IV     : InvIT (Infrastructure Investment Trust)  (e.g. INTERISE-IV, PGINVIT-IV)
+#   -NG     : ZC-NCD category G       (e.g. IIFLZC28-NG)
+#   -Y\d    : debt note category Y    (e.g. ICICM58-Y1)
+#   -IT     : trust segment           (e.g. BDR-IT)
 #   -BL     : Block deal
+# 2026-05-18 v3 expanded suffix list — pool was at 2,982 after v2; sample
+# still leaked SME (-SM), REIT (-RR), InvIT (-IV), debt (-NG / -Y\d), trust
+# (-IT). Target after v3: ~1500-1800 names (≤3 quote chunks → fewer
+# Cloudflare strikes on the /quote endpoint).
 _NON_EQ_SUFFIX_RE = re.compile(
-    r"-(ST|N\d|SG|GS|RT|BL|R\d|YL|YB|BC|BE|BZ|MF|ZC|ME|ML)\d*$"
+    r"-(ST|SM|N\d|SG|GS|RT|RR|IV|NG|Y\d|IT|BL|R\d|YL|YB|BC|BE|BZ|MF|ZC|ME|ML)\d*$"
 )
 
 # Real NSE EQ tradingsymbols match this shape:
@@ -459,21 +469,51 @@ class DiscoveryEngine:
         if not pool:
             return []
 
-        # Batch in chunks of 500 (Kite's quote API limit)
+        # Batch in chunks of 500 (Kite's quote API hard limit), with a 0.6s
+        # sleep between chunks. Phase 2.1.3: Cloudflare started 403'ing the
+        # /quote endpoint with a "Just a moment..." challenge page when 6+
+        # 500-name chunks fired back-to-back at ~50ms intervals — the URL
+        # length and request burst together looked bot-like. A sub-second
+        # space between chunks lets each request fully drain and avoids
+        # the burst signature without slowing total scan time meaningfully
+        # (3 chunks × 0.6s = 1.8s overhead on a 30-60s scan).
         CHUNK = 500
+        SLEEP_BETWEEN_CHUNKS_SEC = 0.6
         nifty_change = self._get_nifty_change_pct()
 
-        for i in range(0, len(pool), CHUNK):
+        # If two consecutive chunks come back empty, abort the rest of the
+        # scan — almost certainly Cloudflare is blocking everything now and
+        # further calls just dig the hole deeper.
+        consecutive_empty = 0
+        import time
+
+        chunks = list(range(0, len(pool), CHUNK))
+        for chunk_idx, i in enumerate(chunks):
             batch = pool[i : i + CHUNK]
             try:
                 quotes = self.kite.get_quotes(batch)
             except Exception as e:
                 print(f"[Discovery] get_quotes failed on chunk {i}-{i+CHUNK}: {e}")
-                continue
-            for sym, q in quotes.items():
-                cand = self._build_candidate(sym, q, now, nifty_change)
-                if cand is not None:
-                    survivors.append(cand)
+                quotes = {}
+
+            if not quotes:
+                consecutive_empty += 1
+                if consecutive_empty >= 2:
+                    print(f"[Discovery] aborting scan — 2 consecutive empty "
+                          f"chunks (Cloudflare block likely). "
+                          f"Scanned {chunk_idx}/{len(chunks)} chunks.")
+                    break
+            else:
+                consecutive_empty = 0
+                for sym, q in quotes.items():
+                    cand = self._build_candidate(sym, q, now, nifty_change)
+                    if cand is not None:
+                        survivors.append(cand)
+
+            # Throttle between chunks. Skip the sleep after the final chunk
+            # so we don't add latency to the last quote → first-candidate gap.
+            if chunk_idx < len(chunks) - 1:
+                time.sleep(SLEEP_BETWEEN_CHUNKS_SEC)
 
         # Sort by composite admission score descending
         survivors.sort(key=lambda c: c.score, reverse=True)
