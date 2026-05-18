@@ -208,9 +208,12 @@ class TradingCrew:
         # Shadow mode default — DISCOVERY_ALLOW_TRADES gates whether names
         # actually merge into the trading pipeline.
         self.discovery = DiscoveryEngine(self.kite, FULL_UNIVERSE)
-        # Phase 2.1.2 — inject news client so admits get enriched with the
-        # catalyst headline on a cold path. Best-effort; failure is non-fatal.
-        self.discovery.news_client = self.news
+        # Fix #183 (2026-05-18) — news_client injection removed. NewsAPI
+        # returns 0 articles for Indian small/mid-caps and pkscreener PyPI
+        # metadata for large-caps, so catalyst enrichment was always empty.
+        # NewsClient is still imported above for crew.py's own _get_news
+        # (which is itself dead behind the Fix #160 conviction-bypass — to
+        # be cleaned up in a future pass).
         try:
             self.discovery.seed_candidate_pool()
         except Exception as e:

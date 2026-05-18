@@ -177,10 +177,14 @@ class DiscoveryEngine:
         self.daily_ctx_path = daily_ctx_path
         self.admits_log_path = admits_log_path
 
-        # Injected by crew.py after construction. Phase 2.1.2 — when present,
-        # each admit is enriched with a NewsAPI+Groq catalyst headline on a
-        # cold path (best-effort, never blocks scan). Default None so unit
-        # tests don't need to mock the news client.
+        # Fix #183 (2026-05-18) — news enrichment removed. NewsAPI is useless
+        # for Indian small/mid-caps (returns 0 articles), and even for large-
+        # caps it returns PyPI package metadata (e.g. "pkscreener 0.46...")
+        # as top headline. Catalyst attribution doesn't feed any trading
+        # decision (conviction engine is purely structural). Field kept as
+        # None for backward compat with anything that may inject a stub in
+        # tests; see PROJECT_MEMORY Fix #183 for full rationale and the
+        # NSE-corporate-announcements alternative if we ever need this back.
         self.news_client = None
 
         # Lazy-load settings so test code can pass a stub module.
@@ -387,10 +391,10 @@ class DiscoveryEngine:
                 f"({cand.reason})"
             )
 
-            # Phase 2.1.2 — cold-path news enrichment + audit log.
-            # Best-effort: if NewsClient unreachable / Groq 429 / etc, we log
-            # the admit without catalyst rather than block the scan.
-            self._enrich_and_log_admit(cand)
+            # Fix #183 (2026-05-18) — admit audit log only. News enrichment
+            # removed: NewsAPI is useless for Indian small/mid-caps. See
+            # _log_admit docstring for full reasoning.
+            self._log_admit(cand)
 
         # Prune stale entries (price cooled back inside ±1% with low volume).
         self._prune_stale(now)
@@ -823,45 +827,26 @@ class DiscoveryEngine:
         except Exception as e:
             print(f"[Discovery] daily_context save failed (non-fatal): {e}")
 
-    # ── Cold-path news enrichment + admit audit log ──────────────────────────
+    # ── Admit audit log ──────────────────────────────────────────────────────
 
-    def _enrich_and_log_admit(self, cand: DiscoveryCandidate) -> None:
+    def _log_admit(self, cand: DiscoveryCandidate) -> None:
         """
-        Fire NewsAPI+Groq catalyst lookup for the newly-admitted candidate
-        (cold path — never blocks the scan). Logs [DiscoveryNews] line and
-        appends a JSONL record to discovery_admits.jsonl for offline
+        Append a JSONL record to discovery_admits.jsonl for offline
         recurring-pattern analysis.
 
-        Why this matters: 2026-05-12 and 2026-05-18 both had JINDRILL +7-8%
-        as the top discovery candidate. Same name, same direction, two weeks
-        apart. The hypothesis is "oil services riding a crude rally" — but
-        we should let the data tell us, not assume. NewsClient's daily cache
-        means at most one Groq call per (symbol, day).
+        Fix #183 (2026-05-18) — news enrichment removed. Empty defaults for
+        `headline` / `sentiment` / `catalyst_type` are kept in the schema so
+        dashboard/shadow_tab.py (which renders the Catalyst & Headline
+        columns) continues to work without a schema migration. Rationale:
+        NewsAPI returns 0 articles for the small/mid-caps Discovery actually
+        admits (RANEHOLDIN, FCL, EASEMYTRIP, STYLAMIND, etc.), and for
+        large-caps it returns PyPI package metadata (e.g.
+        "pkscreener 0.46.20260517.912") as the top headline. Catalyst
+        attribution doesn't feed conviction or sizing — it was nice-to-have
+        metadata for post-hoc pattern mining. If a concrete decision-relevant
+        use case emerges later (e.g. earnings-day veto), the right source is
+        NSE corporate-announcements, NOT NewsAPI.
         """
-        headline = ""
-        sentiment = 0.5
-        catalyst_type = ""
-
-        nc = self.news_client
-        if nc is not None:
-            try:
-                news = nc.get_news_for_symbol(cand.symbol)
-                if news and getattr(news, "has_news", False):
-                    headline = getattr(news, "headline", "") or ""
-                    sentiment = float(getattr(news, "sentiment", 0.5) or 0.5)
-                    catalyst_type = getattr(news, "catalyst_type", "") or ""
-                    print(
-                        f"[DiscoveryNews] {cand.symbol}: "
-                        f"\"{headline[:80]}{'...' if len(headline) > 80 else ''}\"  "
-                        f"sentiment={sentiment:.2f}  catalyst={catalyst_type or 'unknown'}"
-                    )
-            except Exception as e:
-                print(f"[DiscoveryNews] {cand.symbol} enrich failed (non-fatal): "
-                      f"{type(e).__name__}: {e}")
-
-        # Append audit-log entry regardless of news availability so we can
-        # mine the JSONL later for recurring patterns even if NewsAPI was
-        # rate-limited.
         try:
             from datetime import datetime as _dt
             rec = {
@@ -873,9 +858,10 @@ class DiscoveryEngine:
                 "spread_pct": cand.spread_pct,
                 "score": cand.score,
                 "direction": cand.direction_bias,
-                "headline": headline,
-                "sentiment": sentiment,
-                "catalyst_type": catalyst_type,
+                # Fix #183 — kept for schema stability; always empty post-fix
+                "headline": "",
+                "sentiment": 0.5,
+                "catalyst_type": "",
                 "reason": cand.reason,
             }
             with open(self.admits_log_path, "a") as fh:

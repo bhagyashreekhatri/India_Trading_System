@@ -424,6 +424,12 @@ crew.py tick path that were silently nuking conviction-engine admits.
 | 161 | **Wire `PROBE_MODE_ENABLED` through `_allocate`** — `config/settings.py` had `get_active_capital()`/`get_active_max_positions()`/`get_active_conviction_risk()`/`get_active_conviction_target()` helpers ready, but `crew.py` was using bare `CAPITAL` (₹15L) and `MAX_POSITIONS` in 6 places. Flipping `PROBE_MODE_ENABLED=True` + `PAPER_TRADING=False` for the ₹50k live probe would size against ₹15L — **30× intended risk**. Now `_allocate` reads `active_capital`/`active_max_positions` once at top, used consistently throughout (kill-floor, lockout-ceiling, week-floor, max-pos check, risk-amount, max-pos-val, min-risk, min-pos) | `agents/crew.py` | syntax clean; helper returns verified |
 | 162 | **HOD proximity 0.5%→1.2%, change_pct floor -0.3%** — conviction engine was rejecting any stock with `change_pct < 0` AND requiring LTP within 0.5% of day high. Together: stock must be POSITIVE on the day AND within 0.5% of HOD. That eliminated every clean pullback-to-FHH-retest entry (the canonical scalper setup — stock is up structurally, just pulled to test the breakout level). New: `STOCK_HOD_PROXIMITY_PCT=0.012` (1.2%) + new `STOCK_CHANGE_PCT_FLOOR=-0.003` setting (-0.3%). Captures "flat with bullish structure" while still rejecting clearly-bearish bouncing-from-low names | `config/settings.py`, `agents/conviction_engine.py` | settings load verified; conviction_engine imports clean |
 
+**Fix #183 — News enrichment removed from Discovery (2026-05-18):**
+
+| # | What changed | Files | Validation |
+|---|---|---|---|
+| 183 | **Drop NewsAPI enrichment from Discovery admits.** Root cause: NewsAPI returns 0 articles for the Indian small/mid-caps Discovery actually admits (RANEHOLDIN, FCL, EASEMYTRIP, STYLAMIND, MTARTECH, etc.), and for large-caps it returns PyPI package metadata (literally `pkscreener 0.46.20260517.912` for RELIANCE/HDFCBANK/TCS/INFY/ICICIBANK on 2026-05-18). All 27 admits today had empty `catalyst_type` + `headline`. Catalyst attribution doesn't feed conviction or sizing — purely metadata for post-hoc pattern mining. Renamed `_enrich_and_log_admit` → `_log_admit`; gutted the NewsClient call. JSONL schema preserved (empty defaults) so `dashboard/shadow_tab.py` keeps rendering. `crew.py:213` injection removed. `data/news_client.py` retained on disk for `_get_news` (itself dead behind Fix #160 conviction-bypass — separate cleanup). **If a concrete decision-relevant use case emerges later (e.g. earnings-day veto), the right source is NSE corporate-announcements, NOT NewsAPI** | `agents/discovery_engine.py`, `agents/crew.py` | imports clean; schema verified against shadow_tab.py readers |
+
 **Audit findings deferred to next pass (logged for visibility):**
 
 - 🟡 `_score_signals` does 4-7 Kite quote calls per candidate per tick — race-prone, slow. Should cache `self._quote_cache` for the duration of a tick.
@@ -472,7 +478,7 @@ Cleanup deferrals (cosmetic):
 ### JSONL audit files generated at runtime
 
 These accumulate across sessions and feed the dashboard Shadow tab + offline analyzers:
-- `discovery_admits.jsonl` — one row per Discovery admit, with catalyst headline (Phase 2.1.2)
+- `discovery_admits.jsonl` — one row per Discovery admit (Phase 2.1.2; news enrichment removed in Fix #183 — schema preserves `headline`/`sentiment`/`catalyst_type` as empty defaults)
 - `discovery_daily_ctx.json` — per-symbol 20-day avg volume / turnover cache (Phase 2.1.1)
 - `discovery_blacklist.json` — auto-blacklisted Discovery names (Phase 2.1)
 - `rvol_ghost.jsonl` — one row per RVOL rejection (Phase 2.8)
