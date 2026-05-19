@@ -109,7 +109,8 @@ def sanity_settings():
         ("MID_TRADE_REEVAL_ENABLED", settings.MID_TRADE_REEVAL_ENABLED,  True),
         ("RUNWAY_CHECK_ENABLED",  settings.RUNWAY_CHECK_ENABLED,         True),
         ("STOCK_DECOUPLING_ENABLED", settings.STOCK_DECOUPLING_ENABLED,  True),
-        ("STOCK_HOD_PROXIMITY_PCT",  settings.STOCK_HOD_PROXIMITY_PCT,   0.012),
+        # Fix #192 (2026-05-19) raised 1.2% → 2.0% for multi-leg pullback tolerance
+        ("STOCK_HOD_PROXIMITY_PCT",  settings.STOCK_HOD_PROXIMITY_PCT,   0.020),
         ("STOCK_CHANGE_PCT_FLOOR",   settings.STOCK_CHANGE_PCT_FLOOR,    -0.003),
         ("DISCOVERY_UPPER_CIRCUIT_VETO_PCT", settings.DISCOVERY_UPPER_CIRCUIT_VETO_PCT, 18.0),
     ]
@@ -210,7 +211,7 @@ def sanity_conviction_engine_filters():
     # and replaying the filter math directly.
     from config import settings
     floor = settings.STOCK_CHANGE_PCT_FLOOR    # -0.003
-    hod_max = settings.STOCK_HOD_PROXIMITY_PCT # 0.012
+    hod_max = settings.STOCK_HOD_PROXIMITY_PCT # 0.020 (Fix #192; was 0.012)
 
     # change_pct floor logic (relax from `< 0` to `< floor`)
     cases_chg = [
@@ -241,11 +242,12 @@ def sanity_conviction_engine_filters():
     cases_hod = [
         # (below_hod_pct,   should_skip)
         (0.000, False),   # at HOD exactly
-        (0.005, False),   # 0.5% below — within new 1.2% threshold
+        (0.005, False),   # 0.5% below — within new 2.0% threshold
         (0.010, False),   # 1.0% below — still within
-        (0.012, False),   # exactly at threshold
-        (0.015, True),    # 1.5% below — over threshold
+        (0.015, False),   # 1.5% below — within new threshold (Fix #192)
+        (0.020, False),   # exactly at threshold
         (0.025, True),    # 2.5% extended — skip
+        (0.030, True),    # 3.0% extended — skip
     ]
     for below, expect_skip in cases_hod:
         actual_skip = below > hod_max
