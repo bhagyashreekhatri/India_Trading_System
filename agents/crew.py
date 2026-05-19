@@ -23,7 +23,10 @@ from zoneinfo import ZoneInfo
 STATUS_FILE = Path("./system_status.json")
 
 from data.kite_client import KiteDataClient
-from data.news_client import NewsClient
+# Fix #197 (2026-05-19) — NewsClient import removed. Was used only by the
+# now-deleted `_get_news` method (Fix #185 + Fix #197 removed it from the
+# scoring hot path). Class itself remains at data/news_client.py for
+# main.py's preflight health check.
 from memory.trade_state import TradeStateManager, WatchlistItem
 from memory.chroma_client import ChromaMemory
 
@@ -56,7 +59,10 @@ from config.settings import (
     LOSER_STREAK_SIZE_TIERS,
     MIN_SCORE_ENTRY, MIN_SCORE_ENTRY_CONSERVATIVE, MIN_SCORE_WATCHLIST,
     NO_ENTRY_BEFORE_MIN, NO_NEW_ENTRY_AFTER, EOD_CLOSE_TIME,
-    MIDDAY_AVOID_START, MIDDAY_AVOID_END,
+    # Fix #198 (2026-05-19) — MIDDAY_AVOID_START/END removed.
+    # `_is_midday()` was DELETED by Fix #165; no remaining consumers.
+    # Constants themselves stay defined in settings.py for now (other
+    # code may grep for them); the import here was the only live reference.
     PROXIMITY_MAX_PCT, LEADER_PROXIMITY_MAX_PCT, LEADER_DAY_CHG_PCT, LEADER_RS_DELTA_PCT,
     DAILY_LOSS_KILL_PCT,
     CONFLUENCE_MULTIPLIER_2, CONFLUENCE_MULTIPLIER_3, SCAN_MIN_TURNOVER,
@@ -168,7 +174,10 @@ class TradingCrew:
 
     def __init__(self):
         self.kite    = KiteDataClient()
-        self.news    = NewsClient()
+        # Fix #197 (2026-05-19) — self.news removed (NewsClient field). The
+        # only consumer (_get_news in scoring) was already gutted by Fix #185
+        # and the method itself is deleted by Fix #197. Class stays on disk
+        # at data/news_client.py for main.py's preflight check.
         self.state   = TradeStateManager()
         self.chroma  = ChromaMemory()
         self.engine  = ScoringEngine()
@@ -789,19 +798,16 @@ class TradingCrew:
             print(f"[VolumeRS] {sym}: error — {e}")
             return 0.0, 999.0, 0.0, True   # on error, pass liquidity — don't block on missing data
 
-    def _get_news(self, sym: str) -> tuple[bool, float, str, str]:
-        """Returns (has_news, llm_score, catalyst_type, headline)."""
-        try:
-            nd = self.news.get_news_for_symbol(sym)
-            if nd.has_news and nd.headline:
-                try:
-                    self.chroma.store_news(sym, nd.headline, nd.sentiment,
-                                          nd.llm_score, nd.catalyst_type)
-                except Exception:
-                    pass
-            return nd.has_news, nd.llm_score, nd.catalyst_type, nd.headline or ""
-        except Exception:
-            return False, 0.5, "none", ""
+    # Fix #197 (2026-05-19) — `_get_news` method and `self.news` field DELETED.
+    # Fix #185 already removed the only production call site (in _score_signals);
+    # this fix removes the now-orphaned dead code. NewsClient import is also
+    # removed (no remaining callers in crew.py). The class itself still lives
+    # at data/news_client.py for main.py's preflight health check and for
+    # future NSE-corporate-announcements infrastructure (per Fix #183 plan).
+    #
+    # Tombstone — if you're looking for catalyst attribution on Discovery
+    # admits, see Fix #183. If you're looking for the news_sentiment field
+    # in the legacy scoring pipeline, see Fix #185 (hardcoded neutral 0.5).
 
     # ── Agent 7: Scoring ──────────────────────────────────────────────────────
 
@@ -2086,8 +2092,15 @@ class TradingCrew:
                                             )
                                             if new_oid:
                                                 self.state.update_sl_order_id(p.id, new_oid)
+                                            else:
+                                                # Fix #195 — SL-M returned None. Position now naked.
+                                                self._alert_naked_sl(p, new_sl, "PreTP1Trail")
                                     except Exception as _e:
+                                        # Fix #195 — surface the failure loudly via Telegram + retry.
+                                        # Was: silent print + pass, leaving the position uncovered.
                                         print(f"[PreTP1Trail] SL-M replacement failed on {p.symbol}: {_e}")
+                                        if not PAPER_TRADING:
+                                            self._alert_naked_sl(p, new_sl, "PreTP1Trail exception", error=str(_e))
                         elif pnl_r < PRE_TP1_TRAIL_TRIGGER_R and p.id in self._pre_tp1_first_seen:
                             # Dropped below the trigger before we got 10 min hold
                             # — reset the timer so subsequent re-cross requires
@@ -2167,8 +2180,13 @@ class TradingCrew:
                                     )
                                     if new_oid:
                                         self.state.update_sl_order_id(p.id, new_oid)
+                                    else:
+                                        # Fix #195 — SL-M returned None. Position now naked.
+                                        self._alert_naked_sl(p, new_sl, "Reeval-Tighten")
                             except Exception as _e:
                                 print(f"[Reeval] SL-M replacement failed on {p.symbol}: {_e}")
+                                if not PAPER_TRADING:
+                                    self._alert_naked_sl(p, new_sl, "Reeval-Tighten exception", error=str(_e))
                     elif rr.action == "CLOSE":
                         marker = "ENABLED" if MID_TRADE_REEVAL_ENABLED else "SHADOW"
                         print(f"[Reeval] {p.symbol} CLOSE-{marker} — "
@@ -2247,11 +2265,42 @@ class TradingCrew:
         partial_pnl = (curr - p.entry_price) * qty_exit
         new_sl      = p.entry_price   # breakeven
 
+        tx = "SELL" if p.direction == "long" else "BUY"
+        # Fix #194 (2026-05-19) — order reversal: place market exit FIRST,
+        # check return, THEN update DB. Mirrors Fix #170 (entry rollback).
+        # Was: mark_tp1_hit + update_stop_loss called BEFORE place_order.
+        # In live mode, if broker rejects the partial-exit MARKET order
+        # (frozen symbol, daily limit reached, insufficient margin for
+        # square-off etc.), the DB would record tp1_hit=1 + qty_remaining=
+        # half while no shares were actually sold. The SL-M would then get
+        # cancelled and re-placed for qty_remaining (half), leaving the
+        # un-sold half covered only by the original SL on full size.
+        # Outcome: bookkeeping shows TP1 hit, broker holds full position,
+        # SL covers only half. Now we fire the order first; only update DB
+        # on success or in paper.
+        tp1_order_id = self.kite.place_order(p.symbol, tx, qty_exit)
+        if tp1_order_id is None and not PAPER_TRADING:
+            print(f"[PosMgr] 🛑 TP1 PARTIAL EXIT REJECTED by broker — {p.symbol} "
+                  f"{tx} {qty_exit} (no order id returned). DB NOT updated. "
+                  f"Position remains full-size on the original SL.")
+            try:
+                from tools.telegram_tools import _send
+                _send(
+                    f"🛑 <b>TP1 PARTIAL EXIT REJECTED</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔴 {p.symbol} {tx} {qty_exit} @ ~₹{curr:.2f}\n"
+                    f"Broker returned no order id.\n"
+                    f"Position UNCHANGED: full qty={p.quantity_remaining} "
+                    f"on original SL ₹{p.stop_loss:.2f}.\n"
+                    f"Check margin / freeze / square-off limits."
+                )
+            except Exception:
+                pass
+            return
+
+        # Order succeeded (paper or live). Now safe to update DB.
         self.state.mark_tp1_hit(p.id, qty_remaining, partial_pnl)
         self.state.update_stop_loss(p.id, new_sl)
-
-        tx = "SELL" if p.direction == "long" else "BUY"
-        self.kite.place_order(p.symbol, tx, qty_exit)
 
         # Replace broker-side SL-M: cancel old (was on full qty at initial_sl),
         # place new on remaining qty at breakeven (Fix #6).
@@ -2323,13 +2372,22 @@ class TradingCrew:
                 if getattr(p, "sl_order_id", ""):
                     self.kite.cancel_order(p.sl_order_id)
                 sl_tx = "SELL" if p.direction == "long" else "BUY"
-                new_oid = self.kite.place_sl_order(
-                    symbol=p.symbol, transaction=sl_tx,
-                    quantity=p.quantity_remaining,
-                    trigger=new_sl, price=new_sl,
-                )
-                if new_oid:
-                    self.state.update_sl_order_id(p.id, new_oid)
+                try:
+                    new_oid = self.kite.place_sl_order(
+                        symbol=p.symbol, transaction=sl_tx,
+                        quantity=p.quantity_remaining,
+                        trigger=new_sl, price=new_sl,
+                    )
+                    if new_oid:
+                        self.state.update_sl_order_id(p.id, new_oid)
+                    elif not PAPER_TRADING:
+                        # Fix #195 — SL-M returned None on post-TP1 trail.
+                        # Position now naked. Alert + retry.
+                        self._alert_naked_sl(p, new_sl, "post-TP1 trail")
+                except Exception as _e:
+                    print(f"[PosMgr] post-TP1 trail SL-M failed for {p.symbol}: {_e}")
+                    if not PAPER_TRADING:
+                        self._alert_naked_sl(p, new_sl, "post-TP1 trail exception", error=str(_e))
                 print(f"[PosMgr] 🔄 Trail SL {p.symbol}: "
                       f"{p.stop_loss:.2f} → {new_sl:.2f} "
                       f"(ATR={atr:.2f}, mult={mult:.2f})")
@@ -2340,6 +2398,67 @@ class TradingCrew:
         except Exception:
             pass
 
+
+    def _alert_naked_sl(self, p, intended_sl: float, context: str, error: str = ""):
+        """
+        Fix #195 (2026-05-19) — emergency alert for a mid-trade SL-M
+        placement failure. Before Fix #195, the 3 mid-trade SL-update
+        paths (PreTP1Trail, post-TP1 trail, Reeval-Tighten) silently
+        swallowed broker rejects on `place_sl_order` via `except: pass`
+        or `if new_oid: ...` (no else). Outcome: position has NO
+        broker-side stop covering it — naked exposure with the operator
+        unaware.
+
+        We do NOT auto-emergency-exit here (unlike Fix #177 which fires
+        post-entry). Mid-trade auto-exit is too aggressive: position may
+        be in profit, ATR-trail may have moved SL much higher than
+        original; closing at market sacrifices the runway. Right action
+        is alert + retry-once + flag for operator.
+
+        Path:
+          1. Print loud red banner with context
+          2. Try place_sl_order ONE more time (transient broker glitch)
+          3. If second attempt also fails, Telegram alert with current
+             position state — operator must intervene
+        """
+        sym = getattr(p, "symbol", "?")
+        qty = getattr(p, "quantity_remaining", 0)
+        prev_sl = getattr(p, "stop_loss", 0.0)
+        print(f"[PosMgr] 🛑 SL-M REPLACEMENT FAILED — {sym} qty={qty} "
+              f"intended SL=₹{intended_sl:.2f} (prev ₹{prev_sl:.2f}). "
+              f"Context: {context}. Error: {error or 'no order id returned'}")
+        # Retry once
+        retried_oid = None
+        try:
+            sl_tx = "SELL" if p.direction == "long" else "BUY"
+            retried_oid = self.kite.place_sl_order(
+                symbol=sym, transaction=sl_tx, quantity=qty,
+                trigger=intended_sl, price=intended_sl,
+            )
+        except Exception as e2:
+            print(f"[PosMgr] SL-M retry also failed for {sym}: {e2}")
+        if retried_oid:
+            try:
+                self.state.update_sl_order_id(p.id, retried_oid)
+            except Exception:
+                pass
+            print(f"[PosMgr] ✅ SL-M retry succeeded for {sym} — oid={retried_oid}")
+            return
+        # Both attempts failed — alert operator
+        try:
+            from tools.telegram_tools import _send
+            _send(
+                f"🛑 <b>SL-M NAKED — {sym}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Context: {context}\n"
+                f"qty={qty}, intended SL=₹{intended_sl:.2f}\n"
+                f"Previous SL=₹{prev_sl:.2f}\n"
+                f"<b>Broker rejected SL-M placement twice.</b>\n"
+                f"Position is currently NOT protected by a broker-side stop.\n"
+                f"Operator: manually place SL or square off from Kite."
+            )
+        except Exception:
+            pass
 
     def _full_exit(self, p, curr: float, reason: str):
         """Close full remaining position. Cancel SL-M first to avoid double sell."""
@@ -2372,6 +2491,69 @@ class TradingCrew:
                 if p.quantity > 0 else 0
 
         status = "closed_win" if total_pnl > 0 else "closed_loss"
+
+        # Fix #194 (2026-05-19) — order reversal: cancel SL-M → place market
+        # exit → CHECK return → THEN close_position. Mirrors Fix #170 (entry
+        # rollback). Was: close_position written FIRST, place_order called
+        # AFTER with no return check. In live mode, if broker rejects the
+        # exit MARKET order (frozen symbol, daily limit, insufficient
+        # margin for square-off), DB would record closed_win/closed_loss
+        # while real shares remained held. Now: only close_position on
+        # successful exit. If broker rejects in live, position stays open
+        # in the DB, SL-M is restored (best-effort), operator alerted.
+
+        # Cancel any pending broker-side SL-M before placing the MARKET exit
+        # (Fix #6) — prevents the "polling sees SL hit + broker SL-M also fires"
+        # double-sell race in live mode. Safe no-op in paper.
+        cancelled_sl_oid = getattr(p, "sl_order_id", "") or ""
+        if cancelled_sl_oid and reason not in ("sl_hit", "sl_trail_hit"):
+            self.kite.cancel_order(cancelled_sl_oid)
+        # If reason IS sl_hit/sl_trail_hit, the broker stop may have just filled;
+        # cancel is still attempted but failure is benign (already filled).
+        elif cancelled_sl_oid:
+            self.kite.cancel_order(cancelled_sl_oid)
+
+        tx = "SELL" if p.direction == "long" else "BUY"
+        exit_order_id = self.kite.place_order(p.symbol, tx, qty)
+        if exit_order_id is None and not PAPER_TRADING:
+            # Live broker rejected the exit market order. Position is STILL
+            # OPEN. Do NOT write close_position. Restore the SL-M we just
+            # cancelled (best-effort) so the position isn't naked.
+            print(f"[PosMgr] 🛑 EXIT REJECTED by broker — {p.symbol} "
+                  f"{tx} {qty} (no order id returned). DB UNCHANGED — "
+                  f"position remains OPEN. Attempting SL-M restoration.")
+            sl_tx = "SELL" if p.direction == "long" else "BUY"
+            restored_oid = None
+            try:
+                restored_oid = self.kite.place_sl_order(
+                    symbol=p.symbol, transaction=sl_tx, quantity=qty,
+                    trigger=p.stop_loss, price=p.stop_loss,
+                )
+            except Exception as _e:
+                print(f"[PosMgr] SL-M restoration also failed for {p.symbol}: {_e}")
+            if restored_oid:
+                try:
+                    self.state.update_sl_order_id(p.id, restored_oid)
+                except Exception:
+                    pass
+            # Telegram alert — operator must intervene manually
+            try:
+                from tools.telegram_tools import _send
+                sl_status = "SL-M restored" if restored_oid else "⚠ SL-M NOT restored (naked!)"
+                _send(
+                    f"🛑 <b>EXIT REJECTED — {p.symbol}</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔴 {tx} {qty} @ ~₹{curr:.2f}\n"
+                    f"Reason: {reason}\n"
+                    f"Broker returned no order id. Position remains OPEN.\n"
+                    f"{sl_status}\n"
+                    f"<b>Operator: square off manually from Kite if SL doesn't fire.</b>"
+                )
+            except Exception:
+                pass
+            return  # leave position open in DB
+
+        # Order succeeded (or paper mode). Close the position row.
         self.state.close_position(p.id, curr, total_pnl, pnl_r, status, reason)
 
         # Phase 2.1 — report outcome to Discovery Engine so it can
@@ -2381,19 +2563,6 @@ class TradingCrew:
             self.discovery.report_trade_outcome(p.symbol, pnl_r)
         except Exception as e:
             print(f"[Discovery] report_trade_outcome failed (non-fatal): {e}")
-
-        # Cancel any pending broker-side SL-M before placing the MARKET exit
-        # (Fix #6) — prevents the "polling sees SL hit + broker SL-M also fires"
-        # double-sell race in live mode. Safe no-op in paper.
-        if getattr(p, "sl_order_id", "") and reason not in ("sl_hit", "sl_trail_hit"):
-            self.kite.cancel_order(p.sl_order_id)
-        # If reason IS sl_hit/sl_trail_hit, the broker stop may have just filled;
-        # cancel is still attempted but failure is benign (already filled).
-        elif getattr(p, "sl_order_id", ""):
-            self.kite.cancel_order(p.sl_order_id)
-
-        tx = "SELL" if p.direction == "long" else "BUY"
-        self.kite.place_order(p.symbol, tx, qty)
 
         emoji = "✅" if total_pnl > 0 else "❌"
         print(f"[PosMgr] {emoji} CLOSED {p.symbol} @ {curr:.2f} | "

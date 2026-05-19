@@ -34,7 +34,43 @@ class KiteDataClient:
         self.kite.set_access_token(access_token or KITE_ACCESS_TOKEN)
         self._instrument_cache: dict = {}
         self._pdh_pdl_cache: dict = {}   # (symbol, date_str) → (pdh, pdl)
+        # Fix #196 (2026-05-19) — per-error-signature debouncing for the
+        # Telegram alert on quote failures. Stores {sig: last_alert_iso_ts}.
+        # Persists for the process lifetime; one alert per signature per
+        # 30-min window so Cloudflare-challenge waves don't spam the
+        # operator while real outages still surface promptly.
+        self._quote_error_alerts: dict = {}
         self._load_instruments()
+
+    def _maybe_alert_quote_error(self, err_msg: str, n_symbols: int = 0) -> None:
+        """Fix #196 — Telegram alert for quote failures, debounced per
+        error signature to 1 per 30 min. Identifies error class by the
+        first 60 chars (stable across Cloudflare nonce variations).
+        Never raises — alerting must not crash the loop."""
+        from datetime import datetime, timedelta
+        sig = err_msg[:60]   # collapses CF challenge variations
+        now = datetime.now()
+        last = self._quote_error_alerts.get(sig)
+        if last is not None and (now - last) < timedelta(minutes=30):
+            return  # debounced
+        self._quote_error_alerts[sig] = now
+        # Compact, human-readable category for the alert
+        kind = "Cloudflare challenge" if "Unknown Content-Type" in err_msg \
+               or "Just a moment" in err_msg else "Kite API error"
+        try:
+            from tools.telegram_tools import _send
+            _send(
+                f"⚠️ <b>Kite quote fetch failed</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Kind: {kind}\n"
+                f"Symbols requested: {n_symbols}\n"
+                f"Error: <code>{sig}</code>\n"
+                f"Next 30 min of identical errors will be debounced.\n"
+                f"<i>If this persists for &gt;5 min during market hours, "
+                f"check Kite session / Cloudflare cookies.</i>"
+            )
+        except Exception:
+            pass
 
     def _load_instruments(self):
         """Cache instrument tokens for quick lookup."""
@@ -91,7 +127,20 @@ class KiteDataClient:
                     }
             return result
         except Exception as e:
+            # Fix #196 (2026-05-19) — surface persistent quote failures via
+            # Telegram. Before Fix #196, errors were print-only; on a Kite
+            # outage during market hours the operator could miss it for
+            # hours while the agent silently fell through to single-symbol
+            # fetches (and pinged Kite as one-by-one, magnifying the
+            # rate-limit pressure). Now: first error per session per error-
+            # signature is alerted; subsequent identical errors are debounced
+            # to once-per-30-min to avoid alert spam during Cloudflare
+            # challenge waves (which fire one per scan and resolve next tick).
             print(f"[Kite] Quote error: {e}")
+            try:
+                self._maybe_alert_quote_error(str(e), n_symbols=len(symbols))
+            except Exception:
+                pass  # alerting must never break the trading loop
             return {}
 
     # ── Historical candles ─────────────────────────────────────────────────────

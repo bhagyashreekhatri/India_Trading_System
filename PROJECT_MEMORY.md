@@ -442,16 +442,26 @@ crew.py tick path that were silently nuking conviction-engine admits.
 
 ### Open / pending after this work
 
-Shadow flags (all default False — flip after observed data validates):
-- **DISCOVERY_ALLOW_TRADES = False** — flip after 3-5 sessions of clean shadow logs in the Shadow tab
-- **STOCK_DECOUPLING_ENABLED = False** — flip after 3-5 sessions
-- **RUNWAY_CHECK_ENABLED = False** (logs admit-shadow / would-skip lines) — flip after 2 sessions
-- **MID_TRADE_REEVAL_ENABLED = False** — flip after 3-5 sessions of `[Reeval]` shadow logs (only fires when positions exist)
-- **PAPER_TRADING = True** + **PROBE_MODE_ENABLED = False** — flip both simultaneously at Phase 3 start (target: ~3 weeks out)
+Shadow flags state (post Fix #171, 2026-05-18 — flipped LIVE in paper without
+the doc-mandated 3-5 session shadow window; flagged in doc 25 H2 as discipline
+drift):
+- **DISCOVERY_ALLOW_TRADES = True** ✅ (was False; flipped 2026-05-18) — first live admit FCL +19.97% same day
+- **STOCK_DECOUPLING_ENABLED = True** ✅ (was False; flipped 2026-05-18) — has not fired yet (needs STRONG_RED day)
+- **RUNWAY_CHECK_ENABLED = True** ✅ (was False; flipped 2026-05-18) — observed acting at the per-setup level on multiple ticks
+- **MID_TRADE_REEVAL_ENABLED = True** ✅ (was False; flipped 2026-05-18) — CLOSE action has NOT been observed firing in production
+- **PAPER_TRADING = True** ✅ (probe-paper mode) — flip to False at Phase 3 start (target: doc 17 says ~2026-07-20; doc 25 says earliest 2026-06-08 if B2-B6 fixed)
+- **PROBE_MODE_ENABLED = False** ✅ (currently paper at ₹15L full capital, NOT ₹50k probe) — flip to True only when co-flipping PAPER_TRADING to False (Fix #187 boot assertion enforces co-flip)
 
 Empirical questions waiting on data:
 - **B1 (hardcoded sector-priority filter)** — KEEP for now; needs 30-month back-test using existing trade_state schema
-- **B7 (RVOL 2.0 threshold)** — KEEP for now; **`scripts/rvol_backtest.py` will give a data-driven answer** after 2-3 weeks of `rvol_ghost.jsonl` accumulation
+- **B7 (RVOL 2.0 threshold)** — RESOLVED via Fix #189: lowered to 1.5 based on doc-14/doc-12 30-month evidence (1.0-1.5 bucket has highest expectancy). `scripts/rvol_backtest.py` still pending data for further refinement.
+
+Recent funnel relaxations (post 2026-05-19 zero-trade observation):
+- Fix #189 lowered `MOMENTUM_BO_MIN_RVOL` 2.0 → 1.5
+- Fix #190 lowered `ORDER_BOOK_RATIO_MIN` 1.5 → 1.3
+- Fix #191 set `REQUIRE_STOCK_FHH_BREAK` False (Phase 1.1 speculative tightening removed; aligns with research's NIFTY-only FHH rule)
+- Fix #192 widened `STOCK_HOD_PROXIMITY_PCT` 1.2% → 2.0% (multi-leg pullback tolerance)
+- Fix #188 added post-NIFTY-FHH-break replay of FHH-rejected signals
 
 Cleanup deferrals (cosmetic):
 - **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only

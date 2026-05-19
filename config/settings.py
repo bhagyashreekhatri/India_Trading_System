@@ -311,8 +311,13 @@ NO_ENTRY_BEFORE_MIN     = 5              # skip 9:15–9:20 (liquidity)
 ORB_WINDOW_END          = "09:30"        # ORB setups only before this
 PRIME_TIME_START        = "09:30"        # best time for momentum/reclaim
 PRIME_TIME_END          = "11:30"        # peak volume window
-MIDDAY_AVOID_START      = "13:00"        # lunch lull — be selective
-MIDDAY_AVOID_END        = "14:00"        # resume normal scanning
+# Fix #198 (2026-05-19) — MIDDAY_AVOID_START / MIDDAY_AVOID_END DELETED.
+# Three-Laws Law-3 violation (clock category in code & reasoning); the
+# 18-month research (doc 14) showed NO hour-of-day bias remains after
+# the 10:15 macro filter is applied. Fix #165 deleted `_is_midday()`
+# already; this fix removes the now-orphaned constants. If you're
+# looking for "skip lunch hours" behavior, the answer is: don't.
+# Conviction engine reads structural state per tick — no clock gate.
 NO_NEW_ENTRY_AFTER      = "14:45"        # Fix #47 set this to 13:30 because the
                                          # BUGGY partial-unwind block (Fix #34) was
                                          # also firing at the same time, killing
@@ -401,7 +406,21 @@ SPREAD_MAX_PCT                 = 0.0010   # 0.10%
 # pullback admit — only naked HOD breaks survived. The mid-trade re-eval
 # already uses 1.5% for its HOD-broken-check, so 1.2% pre-entry is tighter
 # than the post-entry tolerance, which is what we want.
-STOCK_HOD_PROXIMITY_PCT        = 0.012    # 1.2% — fresh HOD or clean pullback
+STOCK_HOD_PROXIMITY_PCT        = 0.020    # 2.0% — Fix #192 (2026-05-19).
+# Was 0.5% (Phase 1.1) → 1.2% (Fix #162) → 2.0% now.
+# Doc 25 §4 B5 flagged: Kite's `ohlc.high` is the SESSION high, not a
+# rolling intraday high. On a multi-leg day (e.g. 09:30 peak ₹510, then
+# pullback to ₹495, then 11:00 swing high ₹505, then pullback to ₹498),
+# a 1.2% gate kills the 11:00 retest entry because LTP=₹498 is 2.4%
+# below session-high ₹510 — but it's <0.5% below the relevant 11:00
+# swing high. The proper fix is rolling intraday high tracking; the
+# simpler fix is widening the threshold to accommodate the second-leg
+# scenario. 2.0% is the band where a stock is still structurally "near"
+# its day's range without being a distant chase. Mid-trade reeval
+# already uses 1.5% for HOD-broken-check, so pre-entry 2.0% is slightly
+# looser than post-entry — acceptable because pre-entry has more
+# filters (FHH, RVOL, depth) AND a lower-quality entry can still be
+# managed by the reeval.
 STOCK_CHANGE_PCT_FLOOR         = -0.003   # -0.3% — allows flat/bullish-structure pullback
 
 
