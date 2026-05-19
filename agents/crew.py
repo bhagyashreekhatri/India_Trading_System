@@ -262,6 +262,21 @@ class TradingCrew:
             max_drift_pct=PENDING_RETEST_MAX_DRIFT_PCT,
             log_path=PENDING_RETEST_LOG_PATH if PENDING_RETEST_ENABLED else None,
         )
+        # Fix #188 (2026-05-19) — post-FHH-break re-evaluation queue.
+        # Scenario this solves: 2026-05-19 — LATENTVIEW scored 8.6 at 10:22
+        # but conviction rejected for `nifty_fhh_not_broken`. NIFTY's FHH
+        # then broke at 10:45 (23 min later). By then LATENTVIEW's 5-min
+        # setup window had closed and it was never re-evaluated.
+        # The 30-month research validates GREEN+FHH = 97% (n=48) — but
+        # only if signals waiting on FHH actually get re-checked when it
+        # breaks. This queue stores (symbol, scored_dict, ts_iso) of every
+        # signal rejected for `nifty_fhh_not_broken`. The drain runs at
+        # the top of _allocate: if NIFTY FHH is now clean-broken, prepend
+        # queue items to the scored list so they pass through conviction
+        # again (which now finds FHH broken). Per-symbol dedup; entries
+        # older than FHH_WAIT_MAX_AGE_MIN are dropped as stale.
+        self._fhh_waiting_queue: list[dict] = []
+        self._fhh_drained_today: bool = False  # one-shot drain per session
         # Clear yesterday's watchlist so dashboard shows only today's signals
         self.state.clear_old_watchlist()
         print("[Crew] Initialized — scanning 150 stocks, TP1+TP2+trailing SL active")
@@ -317,6 +332,16 @@ class TradingCrew:
         self._reject_counts.clear()   # Fix #39 — fresh rejection counts per tick
         self._quote_cache.clear()  # Fix #168 — fresh per-tick quote cache
         self._tier_hist.clear()    # Fix #175 — fresh conviction-tier histogram
+        # Fix #188 (2026-05-19) — reset FHH-waiting state at session rollover.
+        # Detected by comparing today's ISO date against the cached one.
+        # Without this, _fhh_drained_today=True would persist forever, blocking
+        # subsequent days' replays. Queue is also cleared (yesterday's signals
+        # are irrelevant — different price levels, different setups).
+        _today_iso = datetime.now(IST).date().isoformat()
+        if getattr(self, "_fhh_session_date", None) != _today_iso:
+            self._fhh_waiting_queue = []
+            self._fhh_drained_today = False
+            self._fhh_session_date = _today_iso
         # Fix #178 — clear stock-FHH candle cache so each tick gets fresh
         # 5-min bars (FHH state itself persists per symbol+date).
         try:
@@ -1442,6 +1467,33 @@ class TradingCrew:
         except ImportError:
             USE_CONVICTION_ENGINE = False  # fail-safe: old path
 
+        # Fix #188 (2026-05-19) — drain "waiting on NIFTY FHH" queue once,
+        # the first time NIFTY's FHH state goes from not-broken to clean-
+        # broken. The queue contains scored signals that earlier in the
+        # session were rejected by conviction for `nifty_fhh_not_broken`.
+        # Prepend them to `scored` so they pass through the same conviction
+        # loop below (which now finds FHH broken). Per-symbol dedup is
+        # handled at queue-insertion time. The `_fhh_drained_today` flag
+        # ensures we don't repeatedly drain on every tick post-break.
+        if USE_CONVICTION_ENGINE and self._fhh_waiting_queue and not self._fhh_drained_today:
+            try:
+                nifty_fhh_state = self.fhh_detector.get_state("NIFTY 50")
+                if getattr(nifty_fhh_state, "clean_high_break", False):
+                    waiting = self._fhh_waiting_queue
+                    n_waiting = len(waiting)
+                    # Replay items as if they're fresh scored signals. The
+                    # downstream conviction call still uses fresh quotes;
+                    # the proximity check still uses fresh LTP vs the
+                    # signal's entry_price; conviction now finds FHH broken.
+                    scored = list(waiting) + list(scored)
+                    self._fhh_waiting_queue = []
+                    self._fhh_drained_today = True
+                    syms = [s.get("symbol", "?") for s in waiting]
+                    print(f"[Allocator] FHH broken — replaying {n_waiting} waiting "
+                          f"signal(s): {syms}")
+            except Exception as e:
+                print(f"[Allocator] FHH-queue drain error (non-fatal): {e}")
+
         for s in scored:
             sym    = s["symbol"]
             sector = s.get("sector", get_sector(sym))
@@ -1504,6 +1556,20 @@ class TradingCrew:
                         self._rej(f"conviction_{bucket}")
                         # Also track tier=SKIP for the histogram
                         self._tier_hist["SKIP"] = self._tier_hist.get("SKIP", 0) + 1
+                        # Fix #188 (2026-05-19) — queue scored signal for replay
+                        # when NIFTY's FHH breaks. Only applies pre-FHH-break;
+                        # once drained for today, we stop accumulating. Dedup by
+                        # symbol so we don't add the same name on every tick.
+                        if bucket == "nifty_fhh_not_broken" and not self._fhh_drained_today:
+                            already_queued = any(
+                                q.get("symbol") == sym for q in self._fhh_waiting_queue
+                            )
+                            if not already_queued:
+                                # Cap queue size at 20 to bound memory & replay cost
+                                if len(self._fhh_waiting_queue) < 20:
+                                    self._fhh_waiting_queue.append(s)
+                                    print(f"[Allocator] {sym} queued for post-FHH replay "
+                                          f"(queue size {len(self._fhh_waiting_queue)})")
                         continue
                     else:
                         print(f"[Conviction] {sym} TIER_{conviction_result.tier} — {conviction_result.reasoning}")

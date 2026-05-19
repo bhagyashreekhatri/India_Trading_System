@@ -145,8 +145,11 @@ def check_phase_a_config():
         return f"({len(SETUP_DISARMED_LIST)} disarmed)"
 
     def rvol_check():
-        if MOMENTUM_BO_MIN_RVOL != 2.0:
-            raise AssertionError(f"expected 2.0 (Fix #56), got {MOMENTUM_BO_MIN_RVOL}")
+        # Fix #189 (2026-05-19) — lowered 2.0 → 1.5. 18mo/30mo research
+        # (docs 12 §2, 14 §4) showed RVOL 1.0-1.5 has highest expectancy
+        # (75% WR / +0.317R). Conviction engine is now the precision gate.
+        if MOMENTUM_BO_MIN_RVOL != 1.5:
+            raise AssertionError(f"expected 1.5 (Fix #189), got {MOMENTUM_BO_MIN_RVOL}")
         return f"= {MOMENTUM_BO_MIN_RVOL}"
 
     def conf_check():

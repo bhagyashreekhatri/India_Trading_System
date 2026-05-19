@@ -71,10 +71,28 @@ LEADER_RS_DELTA_PCT     = 1.5
 VOLUME_MIN_RATIO        = 1.2
 VOLUME_STRONG_RATIO     = 1.5
 VOLUME_VERY_STRONG      = 2.5
-MOMENTUM_BO_MIN_RVOL    = 2.0   # Fix #22 (A1) → Fix #37 1.7 → Fix #56 back to 2.0.
-                                # 280-trade audit: gross +0.075R / net -0.05R per
-                                # trade. Need to lift mean R to +0.30+. Tightening
-                                # RVOL floor is one lever. 1.7 was chasing fakeouts.
+MOMENTUM_BO_MIN_RVOL    = 1.5   # Fix #22 (A1) → Fix #37 1.7 → Fix #56 back to 2.0
+                                #   → Fix #189 (2026-05-19) lowered to 1.5.
+                                # Justification: 30-month/18-month dataset analysis
+                                # (doc 14 §4, doc 12 §2) explicitly recommends
+                                # lowering this to 1.0 because the vol 1.0-1.5
+                                # bucket has the HIGHEST expectancy (75% WR /
+                                # +0.317R). Fix #56 raised it back to 2.0 based
+                                # on 280-trade DB intuition, but that DB was
+                                # pre-rebuild — predates conviction engine and
+                                # macro/FHH filters. With conviction in place
+                                # as the precision gate, RVOL just confirms
+                                # "real buyer presence" — 1.5 is sufficient.
+                                # Today's observed bottleneck: 2026-05-19 had
+                                # 6+ clean MOMENTUM_BREAKOUT candidates in
+                                # 1.4-1.9 range get killed before reaching
+                                # conviction. INFY 1.44, INTELLECT 1.98,
+                                # TORNTPHARM 1.48, etc. Lowering to 1.5 lets
+                                # these reach conviction while still blocking
+                                # the genuinely-weak (RVOL < 1.0) fakeouts.
+                                # If after 5 sessions the WR drops below 60%,
+                                # revisit. Backed by `scripts/rvol_backtest.py`
+                                # once enough ghost data accumulates.
 
 # ─── Phase A — Setup gating + momentum tightening (Fix #56) ──────────────────
 # 280-trade audit (docs/08_Findings_From_280_Trades.md):
@@ -353,7 +371,17 @@ MACRO_STRONG_RED_THRESHOLD     = -0.5
 # 5-level aggregate bid_qty / sell_qty (NOT top-of-book, which can be spoofed
 # by a single large order). Validated finding: top-of-book ratio is noise,
 # 5-level depth is structural commitment.
-ORDER_BOOK_RATIO_MIN           = 1.5
+ORDER_BOOK_RATIO_MIN           = 1.3
+# Fix #190 (2026-05-19) — lowered 1.5 → 1.3. 2026-05-19 observed: ANGELONE
+# scored 7.9 reaching conviction, then rejected at depth ratio 1.45 (just
+# below 1.5 threshold). BSOFT separately rejected at 0.65 (genuinely weak,
+# still rejected at 1.3). The 1.5 threshold was conservative — no
+# empirical 30-month validation behind the exact number. 1.3 admits the
+# cusp candidates (1.3-1.5 band) while still blocking sub-1.3 (genuinely
+# sell-pressure-dominant). Conviction engine has FIVE other filters
+# (macro, FHH, HOD, change_pct floor, spread) — depth is one signal of
+# five. Revisit threshold if 5+ paper sessions show 1.3-1.5 entries
+# losing systematically.
 
 
 # ── Universal spread filter ──────────────────────────────────────────────────
@@ -379,10 +407,28 @@ STOCK_CHANGE_PCT_FLOOR         = -0.003   # -0.3% — allows flat/bullish-struct
 
 # ── Per-stock FHH break requirement (Phase 1.1) ──────────────────────────────
 # When True, the conviction engine requires the SYMBOL's own first-hour-high
-# to be cleanly broken (not just NIFTY's). This is the validated 30-month
-# entry trigger: NIFTY macro context + individual stock breaking its own
-# structural level. Set False to fall back to NIFTY-only FHH (Phase 0).
-REQUIRE_STOCK_FHH_BREAK        = True
+# to be cleanly broken (not just NIFTY's). When False, falls back to
+# NIFTY-only FHH (Phase 0 behavior; what the 30-month research actually
+# validated at 97%).
+#
+# Fix #191 (2026-05-19) — flipped True → False.
+# Rationale:
+#   - The 30-month research (docs 14, 15, 16) validated GREEN+NIFTY-FHH=97%
+#     (n=48), NOT stock-level FHH. Stock-level FHH was a Phase 1.1
+#     speculative tightening added on top of the research without
+#     empirical backing.
+#   - 2026-05-19 paper session: zero entries fired despite GREEN macro +
+#     NIFTY FHH break at 10:45. The stock-level FHH gate is one of the
+#     filters contributing to over-restriction.
+#   - Per-stock FHH adds an unknown second-derivative requirement — if
+#     stock has been pinned to its first-hour high all morning, it can't
+#     "break" it on a candle that opens/closes there. Tightens beyond
+#     what the data supports.
+#   - Reverting to NIFTY-only FHH aligns with the doc-15 spec exactly
+#     ("clean FHH break" referred to NIFTY throughout the research).
+# If after 10+ paper sessions the WR drops below 60%, revisit. The
+# conviction engine still has 6 other filters; this is one input.
+REQUIRE_STOCK_FHH_BREAK        = False
 
 
 # ── Pre-TP1 trail SL (Phase 1.2) ──────────────────────────────────────────
