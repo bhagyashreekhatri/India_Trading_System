@@ -270,6 +270,17 @@ def run_premarket(crew: TradingCrew):
     Run gap analysis on the full universe before market opens.
     Identifies gap-up and gap-down candidates.
     Sends a Telegram gap report.
+
+    Fix #201 (2026-05-19) — Enhanced premarket brief.
+    Adds (for scalper pre-game prep):
+      - NIFTY 50 LTP gap vs previous close (macro-tilt preview)
+      - Top 5 widest gap-ups in the universe (focus list seed for the day)
+      - Top 5 widest gap-downs (avoid list / potential FHL-break shorts later)
+      - Lower threshold from ≥1.5% to ≥1.0% so more candidates surface in
+        the brief (no trading impact — gaps don't gate entries directly)
+    Scope intentionally minimal — no IV (Kite doesn't expose vol surface
+    cleanly), no news/earnings calendar (no clean data source). The brief
+    is operator-facing prep, not a trade-gate.
     """
     print("\n🌅 Pre-market analysis starting...")
     try:
@@ -277,11 +288,35 @@ def run_premarket(crew: TradingCrew):
         from tools.telegram_tools import alert_premarket_gaps
         from config.universe import FULL_UNIVERSE
 
+        # Fix #201 — NIFTY macro-tilt preview (before market opens, this
+        # reads from the previous session's close + any pre-market move).
+        nifty_tilt_pct = None
+        try:
+            q = crew.kite.get_quotes(["NIFTY 50"])
+            n = q.get("NIFTY 50", {})
+            last = float(n.get("last_price", 0) or 0)
+            prev_close = float(n.get("close", 0) or 0)
+            if last > 0 and prev_close > 0:
+                nifty_tilt_pct = (last / prev_close - 1.0) * 100.0
+                tilt_emoji = "⬆" if nifty_tilt_pct > 0 else ("⬇" if nifty_tilt_pct < 0 else "→")
+                print(f"   📈 NIFTY pre-mkt tilt: {tilt_emoji} {nifty_tilt_pct:+.2f}% "
+                      f"(prev close ₹{prev_close:.2f} → now ₹{last:.2f})")
+                # Quick research-aligned readout
+                if abs(nifty_tilt_pct) > 0.5:
+                    expectation = ("STRONG_GREEN day likely (≥+0.5% pre-mkt → 98% historical)"
+                                   if nifty_tilt_pct > 0.5 else
+                                   "STRONG_RED day likely (≤-0.5% pre-mkt → 89% historical)")
+                    print(f"      → {expectation}")
+        except Exception as e:
+            print(f"   ⚠️  NIFTY tilt fetch failed: {e}")
+
         big_gaps = []
         for sym in FULL_UNIVERSE[:50]:    # top 50 liquid stocks
             try:
                 g = _gap_analysis(sym)
-                if abs(g.get("gap_pct", 0)) >= 1.5 and g.get("tradeable"):
+                # Fix #201 — lowered threshold 1.5% → 1.0% to surface more
+                # candidates in the brief (more focus-list seeds)
+                if abs(g.get("gap_pct", 0)) >= 1.0 and g.get("tradeable"):
                     big_gaps.append(g)
             except Exception:
                 continue
@@ -289,14 +324,21 @@ def run_premarket(crew: TradingCrew):
         big_gaps.sort(key=lambda x: abs(x["gap_pct"]), reverse=True)
 
         if big_gaps:
-            print(f"\n   📊 Gap candidates today ({len(big_gaps)}):")
-            for g in big_gaps[:10]:
-                emoji = "⬆" if g["gap_pct"] > 0 else "⬇"
-                print(f"     {emoji} {g['symbol']:12} {g['gap_pct']:+.2f}% — {g['reason']}")
+            # Fix #201 — split into gap-ups and gap-downs for cleaner readout
+            ups = [g for g in big_gaps if g["gap_pct"] > 0][:5]
+            downs = [g for g in big_gaps if g["gap_pct"] < 0][:5]
+            print(f"\n   📊 Top {len(ups)} gap-ups today:")
+            for g in ups:
+                print(f"     ⬆ {g['symbol']:12} {g['gap_pct']:+.2f}% — {g['reason']}")
+            if downs:
+                print(f"\n   📊 Top {len(downs)} gap-downs today:")
+                for g in downs:
+                    print(f"     ⬇ {g['symbol']:12} {g['gap_pct']:+.2f}% — {g['reason']}")
+            print(f"\n   Total gap candidates: {len(big_gaps)} (threshold ≥1.0%)")
         else:
             print("   No significant gaps today")
 
-        # Send Telegram gap report
+        # Send Telegram gap report (existing format — includes top 8 absolute)
         try:
             alert_premarket_gaps(big_gaps[:8])
             print("   📱 Pre-market gap report sent to Telegram")

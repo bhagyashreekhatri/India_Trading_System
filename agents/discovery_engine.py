@@ -700,9 +700,32 @@ class DiscoveryEngine:
 
     def _prune_stale(self, now: datetime) -> None:
         """
-        Remove discovered names that have cooled off — back inside ±1% chg
-        with volume_ratio < 1.0 means the move has died, no reason to keep
-        the name in scope.
+        Remove discovered names that have CLEARLY FAILED.
+
+        Fix #200 (2026-05-19) — focus-list relaxation.
+
+        OLD behavior (pre-Fix #200):
+          - Prune if `abs(cur_pct) < 1.0 AND age >= 15min`
+          - Outcome: a name admitted at +3% that drifted back to +0.5%
+            after 15 min was DROPPED from scope. Scalpers watching this
+            name lose it just as it forms a base. If the stock then
+            surges to +4% on a fresh MOMENTUM_BREAKOUT, the agent
+            doesn't see it — the name is no longer in `_discovered_today`
+            so `get_live_universe` doesn't return it.
+
+        NEW behavior (Fix #200 — focus list):
+          - Prune only if `cur_pct < -1.0 AND age >= 90min` — i.e. the
+            stock has clearly GIVEN UP its move (gone red for 90+ min).
+          - Names hovering in the +0.5% to +3% band stay in focus all
+            day, allowing the agent to catch second-leg breakouts after
+            base-building.
+          - Hard age cap: drop ANY name after 180min in focus (3 hours)
+            so the focus list doesn't grow unbounded across a full
+            session.
+
+        Aligns with the scalper-trader mindset: pick 5-10 names early,
+        watch them ALL day, take whichever cleanly breaks. The original
+        15-min prune was too aggressive for this use case.
         """
         if not self._discovered_today:
             return
@@ -712,6 +735,9 @@ class DiscoveryEngine:
             quotes = self.kite.get_quotes(syms)
         except Exception:
             return
+        FOCUS_PRUNE_CHANGE_PCT = -1.0    # Fix #200 — only prune on clear failure
+        FOCUS_PRUNE_MIN_AGE_MIN = 90     # Fix #200 — give it real time to form 2nd leg
+        FOCUS_HARD_AGE_CAP_MIN  = 180    # Fix #200 — full-session cap
         for sym, cand in self._discovered_today.items():
             q = quotes.get(sym, {})
             last = q.get("last_price", 0.0)
@@ -720,11 +746,14 @@ class DiscoveryEngine:
                 continue
             cur_pct = (last / prev_close - 1.0) * 100.0
             age_min = (now - cand.detected_at).total_seconds() / 60.0
-            # Cooled-off: drifted back inside ±1% and was admitted ≥15 min ago
-            if abs(cur_pct) < 1.0 and age_min >= 15:
-                stale.append(sym)
-        for sym in stale:
-            print(f"[Discovery] PRUNE {sym} — cooled off")
+            # Clear failure path: gone red for ≥90min
+            if cur_pct < FOCUS_PRUNE_CHANGE_PCT and age_min >= FOCUS_PRUNE_MIN_AGE_MIN:
+                stale.append((sym, f"failed (now {cur_pct:+.2f}%, age {age_min:.0f}min)"))
+            # Hard cap: even healthy names drop after 3 hours
+            elif age_min >= FOCUS_HARD_AGE_CAP_MIN:
+                stale.append((sym, f"age-cap (age {age_min:.0f}min)"))
+        for sym, why in stale:
+            print(f"[Discovery] PRUNE {sym} — {why}")
             self._discovered_today.pop(sym, None)
 
     def _reset_for_new_session(self, today_iso: str) -> None:
