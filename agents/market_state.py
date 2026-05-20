@@ -86,6 +86,10 @@ class MarketStateAgent:
         # change (or the first non-WAITING call of the session) emits exactly
         # one `[MarketState]` line. Keyed by ISO date so we re-log fresh each day.
         self._logged_state_today: dict[str, str] = {}
+        # Fix #205 — intraday recovery-unlock telemetry. Track the last upgrade
+        # level we logged per date so each fresh upgrade (RED→YELLOW, later
+        # YELLOW→GREEN, …) emits exactly one `[MacroRecheck]` line.
+        self._logged_recheck_today: dict[str, str] = {}
 
     def get_state(self, now: Optional[datetime] = None) -> MarketStateSnapshot:
         """
@@ -185,9 +189,143 @@ class MarketStateAgent:
             )
             self._logged_state_today[today_iso] = state
 
+        # Fix #205 — intraday recovery unlock. After the 10:15 lock, allow the
+        # macro state to HEAL upward (never downward) if NIFTY reclaims and holds
+        # a strictly-better level across N consecutive 5-min closes. Shadow-gated
+        # by MACRO_RECHECK_ENABLED — in shadow it only logs, returns snap as-is.
+        snap = self._maybe_upgrade(snap, now)
         return snap
 
     # ── Internals ────────────────────────────────────────────────────────────
+
+    def _maybe_upgrade(
+        self,
+        snap: MarketStateSnapshot,
+        now: datetime,
+    ) -> MarketStateSnapshot:
+        """
+        Fix #205 — recovery unlock.
+
+        After the 10:15 lock, re-check NIFTY. If it has reclaimed and HELD a
+        strictly-better state across MACRO_RECHECK_CONFIRM_BARS consecutive
+        closed 5-min bars, upgrade the snapshot to that better state.
+
+        Only UPGRADES (the 10:15 lock is the floor). On a day that keeps
+        bleeding, NIFTY never reclaims → no upgrade → capital protected.
+
+        SHADOW (MACRO_RECHECK_ENABLED=False): logs `[MacroRecheck] WOULD-UPGRADE`
+        and returns `snap` unchanged (zero behaviour change).
+        LIVE (MACRO_RECHECK_ENABLED=True): returns the upgraded snapshot.
+        """
+        from config.settings import (
+            MACRO_RECHECK_ENABLED, MACRO_RECHECK_CONFIRM_BARS,
+            MACRO_RECHECK_LOG_SHADOW, MACRO_STRONG_GREEN_THRESHOLD,
+            MACRO_GREEN_THRESHOLD, MACRO_RED_THRESHOLD,
+        )
+
+        # Only act after the 10:15 lock is in, and only if there's room to heal.
+        if not snap.is_locked_in:
+            return snap
+        if _state_rank(snap.state) >= _state_rank("STRONG_GREEN"):
+            return snap
+        prev_close = snap.nifty_prev_close
+        if prev_close <= 0:
+            return snap
+
+        held, latest_dist = self._held_state_from_candles(
+            now, prev_close, MACRO_RECHECK_CONFIRM_BARS,
+            MACRO_STRONG_GREEN_THRESHOLD, MACRO_GREEN_THRESHOLD,
+            MACRO_RED_THRESHOLD,
+        )
+        # No reclaim, or not strictly better than the current state → no upgrade.
+        if held is None or _state_rank(held) <= _state_rank(snap.state):
+            return snap
+
+        today_iso = now.date().isoformat()
+        if MACRO_RECHECK_LOG_SHADOW and self._logged_recheck_today.get(today_iso) != held:
+            marker = "UPGRADE" if MACRO_RECHECK_ENABLED else "WOULD-UPGRADE (shadow)"
+            dist_str = f"{latest_dist:+.2f}%" if latest_dist is not None else "n/a"
+            print(
+                f"[MacroRecheck] {marker}: {snap.state} → {held}  "
+                f"NIFTY now {dist_str} vs prev close, held above level for "
+                f"{MACRO_RECHECK_CONFIRM_BARS}×5min closes"
+            )
+            self._logged_recheck_today[today_iso] = held
+
+        if not MACRO_RECHECK_ENABLED:
+            return snap  # shadow — no behaviour change
+
+        upgraded = MarketStateSnapshot(
+            state=held,
+            nifty_dist_pct_from_prev_close=round(latest_dist, 3) if latest_dist is not None else snap.nifty_dist_pct_from_prev_close,
+            nifty_prev_close=prev_close,
+            nifty_at_check_time=snap.nifty_at_check_time,
+            snapshot_time_ist=now.isoformat(),
+            is_locked_in=True,
+            reasoning=(
+                f"recovery-upgrade {snap.state}→{held}: NIFTY reclaimed to "
+                f"{(f'{latest_dist:+.2f}%' if latest_dist is not None else 'n/a')} "
+                f"and held {MACRO_RECHECK_CONFIRM_BARS}×5min closes "
+                f"(10:15 lock was: {snap.reasoning})"
+            ),
+        )
+        self._last_snapshot = upgraded
+        return upgraded
+
+    def _held_state_from_candles(
+        self,
+        now: datetime,
+        prev_close: float,
+        n_bars: int,
+        sg_th: float,
+        g_th: float,
+        r_th: float,
+    ) -> tuple[Optional[MacroState], Optional[float]]:
+        """
+        Read the last `n_bars` CLOSED 5-min candles of today and return the best
+        macro state whose threshold ALL of them cleared (vs prev close), plus the
+        most recent close's distance %.
+
+        Using the WORST of the last-N closes (min dist) enforces "held for all N
+        bars" — a single spike that immediately fades will not trigger an upgrade.
+
+        Returns (None, latest_dist) if not enough bars or no reclaim above the
+        RED threshold yet.
+        """
+        try:
+            df = self.kite.get_candles("NIFTY 50", interval="5minute", days=1)
+            if df is None or len(df) == 0:
+                return None, None
+            today_iso = now.date().isoformat()
+            df = df.copy()
+            df["date"] = df["date"].apply(
+                lambda d: d.replace(tzinfo=IST) if d.tzinfo is None else d
+            )
+            df = df[df["date"].apply(lambda d: d.date().isoformat() == today_iso)]
+            # Keep only fully-closed bars: a 5-min bar starting at T closes at
+            # T+5min, so exclude any bar whose start is within the current
+            # incomplete window.
+            from datetime import timedelta
+            cutoff = now - timedelta(minutes=5)
+            df = df[df["date"].apply(lambda d: d <= cutoff)]
+            df = df.sort_values("date")
+            if len(df) < n_bars:
+                return None, None
+            last = df.tail(n_bars)
+            closes = [float(c) for c in last["close"].tolist()]
+            dists = [100.0 * (c - prev_close) / prev_close for c in closes]
+            min_dist = min(dists)
+            latest_dist = dists[-1]
+            if min_dist > sg_th:
+                return "STRONG_GREEN", latest_dist
+            if min_dist > g_th:
+                return "GREEN", latest_dist
+            if min_dist > r_th:
+                return "YELLOW", latest_dist
+            return None, latest_dist
+        except Exception as e:
+            print(f"[MacroRecheck] candle fetch error (non-fatal): {e}")
+            return None, None
 
     def _get_prev_close(self, today_iso: str) -> Optional[float]:
         """Fetch (and cache) previous trading session's NIFTY close."""
@@ -309,6 +447,23 @@ class MarketStateAgent:
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
+
+# Fix #205 — ordinal ranking of macro states (bearish → bullish). Used by the
+# recovery-unlock to allow only UPGRADES (strictly higher rank), never downgrades.
+_STATE_RANK: dict[str, int] = {
+    "WAITING":      -1,
+    "STRONG_RED":    0,
+    "RED":           1,
+    "YELLOW":        2,
+    "GREEN":         3,
+    "STRONG_GREEN":  4,
+}
+
+
+def _state_rank(state: str) -> int:
+    """Return the bearish→bullish ordinal for a macro state (unknown → -1)."""
+    return _STATE_RANK.get(state, -1)
+
 
 def _parse_time(hhmm: str) -> dtime:
     """Parse "HH:MM" → datetime.time."""

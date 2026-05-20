@@ -372,6 +372,39 @@ MACRO_RED_THRESHOLD            = -0.3
 MACRO_STRONG_RED_THRESHOLD     = -0.5
 
 
+# ── Intraday macro re-evaluation (recovery unlock) ───────────────────────────
+# The 10:15 lock is a BASE-RATE read, not a six-hour verdict. On V-shaped
+# recovery days (gap down → reclaim) the locked RED/STRONG_RED freezes the agent
+# out of the ENTIRE recovery. Live evidence — 2026-05-20: NIFTY locked RED at
+# 10:15 (-0.42%), then ground straight back up and made a fresh high above prev
+# close by 12:00; the agent took zero trades while PCBL ran +8.5% and RELIANCE
+# +1.8%. This re-checks NIFTY AFTER the lock and UPGRADES the state (never
+# downgrades) once a strictly-better level is HELD across MACRO_RECHECK_CONFIRM_BARS
+# consecutive 5-min candle closes.
+#
+# Research-consistent: the 30-month study sampled the 10:15 candle close as a
+# base rate for the day's CLOSE — it never claimed the state is immutable.
+# Healing only ever fires on DEMONSTRATED reclaim (sustained candle closes, not
+# a single tick), so it does NOT reintroduce falling-knife risk: on a day that
+# keeps bleeding, NIFTY never reclaims, the upgrade never fires, capital is safe.
+#
+# Upgrade ladder (each requires ALL last-N closes above the level, vs prev close):
+#   reclaim > -0.3%  → upgrade to YELLOW  (out of RED/STRONG_RED → half-size A++)
+#   reclaim > +0.3%  → upgrade to GREEN
+#   reclaim > +0.5%  → upgrade to STRONG_GREEN
+# Only ever moves UP the ladder; the 10:15 lock is the floor (long-only system
+# already sits out on the bearish side, so no downgrade path is needed).
+#
+# SHADOW vs LIVE:
+#   MACRO_RECHECK_ENABLED = False → SHADOW: logs [MacroRecheck] WOULD-UPGRADE and
+#                                   returns the LOCKED state (zero behaviour change)
+#   MACRO_RECHECK_ENABLED = True  → LIVE: returns the upgraded state to conviction
+# Rollback: set MACRO_RECHECK_ENABLED = False to revert to pure 10:15 lock.
+MACRO_RECHECK_ENABLED          = False   # SHADOW until 3-4 sessions confirm
+MACRO_RECHECK_CONFIRM_BARS     = 3       # consecutive closed 5-min bars above level (~15 min)
+MACRO_RECHECK_LOG_SHADOW       = True    # emit [MacroRecheck] lines even in shadow
+
+
 # ── Order book depth filter (universal pre-entry) ────────────────────────────
 # 5-level aggregate bid_qty / sell_qty (NOT top-of-book, which can be spoofed
 # by a single large order). Validated finding: top-of-book ratio is noise,
@@ -571,7 +604,13 @@ MID_TRADE_CLOSE_AT_BROKEN      = 3        # 3/3 dims broken → close at market
 STOCK_DECOUPLING_ENABLED               = True    # LIVE — was SHADOW until 2026-05-18
 STOCK_DECOUPLING_MIN_PCT               = 4.0     # stock %chg vs prev close
 STOCK_DECOUPLING_MIN_VOL_RATIO         = 1.5     # today_vol / 20d_avg_vol
-STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT = 0.5     # LTP within X% of intraday high
+STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT = 1.5     # LTP within X% of intraday high
+# Fix #205 (2026-05-20) — loosened 0.5 → 1.5. Live evidence: PCBL +8.5% on a
+# RED-locked day was a textbook decoupling candidate but was BLOCKED because it
+# had pulled back 2.3% off its high when scanned — the 0.5% gate is too tight
+# for the discovery scan cadence (a strong name breathes more than 0.5% between
+# scans). 1.5% still demands the stock be near its high (not chasing a fader)
+# while admitting names that pulled back one normal swing. Rollback: set to 0.5.
 STOCK_DECOUPLING_SECTOR_FLOOR_PCT      = -1.0    # sector chg ≥ this floor
 
 # Symbol-sector → NIFTY sector-index name mapping. Symbols not in this map

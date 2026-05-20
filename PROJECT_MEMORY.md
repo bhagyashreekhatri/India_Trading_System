@@ -463,6 +463,36 @@ Recent funnel relaxations (post 2026-05-19 zero-trade observation):
 - Fix #192 widened `STOCK_HOD_PROXIMITY_PCT` 1.2% → 2.0% (multi-leg pullback tolerance)
 - Fix #188 added post-NIFTY-FHH-break replay of FHH-rejected signals
 
+**Fix #205 — Intraday macro recovery-unlock (2026-05-20):**
+Motivated by a live MCP/Kite study on 2026-05-20: NIFTY gapped down, locked `RED`
+at 10:15 (-0.42%), then did a clean V-recovery — ground straight back up and made a
+fresh high above prev close by 12:00. The agent took **zero trades the whole session**
+while PCBL ran +8.5% and RELIANCE +1.8%. Root cause was NOT the macro philosophy — it
+was that `agents/market_state.py` writes the 10:15 close into `_first_hour_close_cache`
+and **never re-evaluates** ("Once locked in, never re-fetches"). A V-shaped recovery is
+a known false-negative the 10:15 base rate can't see.
+
+Three changes (all research-consistent — the 30-month study sampled the 10:15 close as
+a base rate for the day's CLOSE, never as an immutable six-hour verdict):
+- **Recovery unlock** in `market_state.py`: after the 10:15 lock, `get_state()` calls
+  `_maybe_upgrade()`. If NIFTY reclaims and HOLDS a strictly-better level across
+  `MACRO_RECHECK_CONFIRM_BARS` (=3) consecutive *closed* 5-min bars, the state heals
+  UPWARD only (STRONG_RED→RED→YELLOW→GREEN→STRONG_GREEN; the 10:15 lock is the floor).
+  Uses the WORST of the last-N closes (min-dist) so a single spike that fades does NOT
+  trigger (whipsaw guard). New helpers `_held_state_from_candles`, `_state_rank`.
+- **SHADOW-gated** via `MACRO_RECHECK_ENABLED` (default **False** → logs
+  `[MacroRecheck] WOULD-UPGRADE` but returns the locked state, zero behaviour change).
+  Flip True after 3-4 sessions confirm it catches recovery days without false fires.
+  Constants: `MACRO_RECHECK_ENABLED`, `MACRO_RECHECK_CONFIRM_BARS=3`,
+  `MACRO_RECHECK_LOG_SHADOW=True`.
+- **Decoupling HOD loosen** (`STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT` 0.5 → 1.5): PCBL
+  was a textbook decoupling candidate today but was blocked because it had pulled 2.3%
+  off its high when scanned — the 0.5% gate is too tight for the discovery scan cadence.
+- Tests: 8/8 in `test_macro_recheck.py` (recovery→YELLOW, strong→GREEN, falling-knife
+  no-fire, spike+fade no-fire — each in shadow + live). Preflight GO, no regressions.
+- **Rollback:** `MACRO_RECHECK_ENABLED=False` (already the default) reverts to pure
+  10:15 lock; set `STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT=0.5` to revert the HOD loosen.
+
 Cleanup deferrals (cosmetic):
 - **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only
 - **PROJECT_MEMORY Fix #75-#82** — ✅ ADDED above (this entry self-completes)
