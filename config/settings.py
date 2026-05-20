@@ -400,7 +400,7 @@ MACRO_STRONG_RED_THRESHOLD     = -0.5
 #                                   returns the LOCKED state (zero behaviour change)
 #   MACRO_RECHECK_ENABLED = True  → LIVE: returns the upgraded state to conviction
 # Rollback: set MACRO_RECHECK_ENABLED = False to revert to pure 10:15 lock.
-MACRO_RECHECK_ENABLED          = False   # SHADOW until 3-4 sessions confirm
+MACRO_RECHECK_ENABLED          = True    # LIVE (2026-05-20) — operator call: trade recovered days
 MACRO_RECHECK_CONFIRM_BARS     = 3       # consecutive closed 5-min bars above level (~15 min)
 MACRO_RECHECK_LOG_SHADOW       = True    # emit [MacroRecheck] lines even in shadow
 

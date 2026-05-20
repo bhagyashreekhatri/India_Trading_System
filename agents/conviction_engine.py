@@ -440,11 +440,16 @@ class ConvictionEngine:
             # Tier B requires high-quality setup grade in addition to FHH break
             grade = getattr(setup, "grade", None)
             grade_str = grade.value if hasattr(grade, "value") else str(grade) if grade else ""
-            if grade_str not in ("A++", "A+"):
+            # Fix #206 (2026-05-20) — loosened A+/A++ → A/A+/A++. On a recovered
+            # (RED→YELLOW via recovery-unlock) tape, demanding A++ only left
+            # clean grade-A breakouts (buyers in control, near HOD, real volume)
+            # on the table while capital sat idle. Half-size keeps risk capped;
+            # the order-book / falling-stock / VWAP gates still reject garbage.
+            if grade_str not in ("A++", "A+", "A"):
                 return _skip(
                     "yellow_macro_requires_high_grade",
                     macro_state="YELLOW", fhh_state="clean_high_break",
-                    failed=[f"YELLOW + FHH requires setup grade A+/A++; got {grade_str or '(none)'}"],
+                    failed=[f"YELLOW + FHH requires setup grade A/A+/A++; got {grade_str or '(none)'}"],
                 )
             return ConvictionResult(
                 tier="B",
