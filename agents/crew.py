@@ -366,6 +366,13 @@ class TradingCrew:
         # 1. Always manage open positions first (SL/TP/trailing/EOD)
         self._manage_positions()
 
+        # 1b. Scalp sub-engine — manage open scalp positions every tick, before
+        # any gate, so their exits always fire (isolated; never breaks the loop).
+        try:
+            self._manage_scalp_positions(now)
+        except Exception as e:
+            print(f"[Scalp] manage error (non-fatal): {e}")
+
         # Phase 2.0 B5 — drive new-agent telemetry at every tick. These calls
         # are internally cached (Kite call only when the cache is stale), so
         # cost is near-zero, but the [MarketState], [Day-Type], [Vol-State],
@@ -430,6 +437,13 @@ class TradingCrew:
         # Sector rotation: promote stocks from top sectors
         top_sectors = self._breadth_cache.get("top_sectors", [])
         active = self._reorder_by_sector(active, top_sectors)
+
+        # 4b. Scalp sub-engine — aggressive stock-structural entries on the same
+        # scanned universe, parallel to the conviction path (isolated/wrapped).
+        try:
+            self._scalp_new_entries(active, now)
+        except Exception as e:
+            print(f"[Scalp] entry error (non-fatal): {e}")
 
         # 5. Detect setups (parallel-friendly loop)
         setups = self._detect_setups(active)
@@ -533,6 +547,155 @@ class TradingCrew:
     # (no callers consult it for trading decisions anymore — only dashboard
     # status JSON did, and that has been removed too). Removing the method
     # closes the Three-Laws Law-3 violation surface for future archaeology.
+
+    # ── Scalp sub-engine (2026-05-21) ─────────────────────────────────────────
+    # A fully ISOLATED aggressive-scalp path that runs alongside the conviction
+    # pipeline. It keeps its OWN positions, its OWN exits (-volatility-scaled
+    # stop / 2R target / scratch / time-stop), its OWN daily ₹30k loss cap, and
+    # its OWN paper ledger (logs/scalp_trades.jsonl). It never touches the
+    # conviction position manager or trade_state.db. Both call sites in run_tick
+    # are wrapped in try/except so a scalp bug can never break live trading.
+    # Entry logic lives in agents/scalp_engine.py. See config/settings SCALP block.
+    def _scalp_init_day(self, now):
+        today = now.date().isoformat()
+        if getattr(self, "_scalp_day", None) != today:
+            self._scalp_day = today
+            self._scalp_positions = []
+            self._scalp_realized_today = 0.0
+
+    def _log_scalp(self, rec: dict):
+        try:
+            import os, json as _json
+            path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                "logs", "scalp_trades.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as f:
+                f.write(_json.dumps(rec) + "\n")
+        except Exception:
+            pass
+
+    def _manage_scalp_positions(self, now):
+        """Exit-check every open scalp position. Runs every tick, before any
+        gate, so exits fire regardless of the conviction time-gate."""
+        from config.settings import SCALP_MODE_ENABLED
+        import config.settings as S
+        from agents.scalp_engine import ScalpConfig, evaluate_exit
+        self._scalp_init_day(now)
+        if not getattr(self, "_scalp_positions", None):
+            return
+        cfg = ScalpConfig.from_settings(S)
+        tag = "LIVE" if SCALP_MODE_ENABLED else "SHADOW"
+        still_open = []
+        for p in self._scalp_positions:
+            sym = p["symbol"]
+            try:
+                q = self.kite.get_quotes([sym]).get(sym, {})
+                ltp = q.get("last_price", 0.0) or p["entry"]
+                bar_high = bar_low = ltp
+                try:
+                    df, _ = self.kite.get_vwap_with_candles(sym)
+                    if df is not None and len(df):
+                        lb = df.iloc[-1]
+                        bar_high = max(ltp, float(lb["high"]))
+                        bar_low  = min(ltp, float(lb["low"]))
+                except Exception:
+                    pass
+                mins = (now - p["entry_time"]).total_seconds() / 60.0
+                ex = evaluate_exit(p["entry"], p["stop"], p["target"], mins,
+                                   bar_high, bar_low, ltp, cfg)
+                if not ex.exit:
+                    still_open.append(p)
+                    continue
+                kind = ex.reason if ex.reason in ("stop", "target") else "exit"
+                exit_px = _apply_paper_slippage(ex.price, "sell", kind)
+                pnl = (exit_px - p["entry"]) * p["qty"]
+                self._scalp_realized_today += pnl
+                print(f"[Scalp] {tag} EXIT {sym} {ex.reason} @ {exit_px:.2f} "
+                      f"(entry {p['entry']:.2f} qty {p['qty']}) "
+                      f"P&L ₹{pnl:+,.0f} | day ₹{self._scalp_realized_today:+,.0f}")
+                self._log_scalp({
+                    "ts": now.isoformat(), "event": "exit", "symbol": sym,
+                    "reason": ex.reason, "entry": p["entry"], "exit": exit_px,
+                    "qty": p["qty"], "pnl_inr": round(pnl, 2),
+                    "day_pnl_inr": round(self._scalp_realized_today, 2),
+                    "live": bool(SCALP_MODE_ENABLED),
+                })
+            except Exception as e:
+                print(f"[Scalp] manage {sym} error (holding): {e}")
+                still_open.append(p)
+        self._scalp_positions = still_open
+
+    def _scalp_new_entries(self, active: list[str], now):
+        """Aggressive stock-structural entries on the scanned universe, parallel
+        to the conviction path. Shadow-logs WOULD-ENTER unless SCALP_MODE_ENABLED."""
+        from config.settings import SCALP_MODE_ENABLED, SCALP_NO_ENTRY_AFTER
+        import config.settings as S
+        from agents.scalp_engine import (
+            ScalpConfig, evaluate_entry, stop_target, daily_cap_hit,
+        )
+        from agents.conviction_engine import _compute_5level_depth_ratio
+        self._scalp_init_day(now)
+        cfg = ScalpConfig.from_settings(S)
+        tag = "LIVE" if SCALP_MODE_ENABLED else "SHADOW"
+
+        if daily_cap_hit(self._scalp_realized_today, cfg):
+            print(f"[Scalp] daily loss cap ₹{cfg.daily_loss_cap_inr:,.0f} hit "
+                  f"(day ₹{self._scalp_realized_today:+,.0f}) — no new scalps today")
+            return
+        if now.time() >= _parse_time(SCALP_NO_ENTRY_AFTER):
+            return
+        open_syms = {p["symbol"] for p in self._scalp_positions}
+        slots = cfg.max_positions - len(self._scalp_positions)
+        if slots <= 0:
+            return
+
+        for sym in active:
+            if slots <= 0:
+                break
+            if sym in open_syms:
+                continue
+            try:
+                df, vwap = self.kite.get_vwap_with_candles(sym)
+                if df is None or len(df) < 3 or not vwap:
+                    continue
+                q = self._get_cached_quote(sym).get(sym, {})
+                if not q:
+                    continue
+                ltp = q.get("last_price", 0.0)
+                last = df.iloc[-1]
+                bar_open, bar_close = float(last["open"]), float(last["close"])
+                rng = (df["high"] - df["low"]).tail(5)
+                atr = float(rng.mean()) if len(rng) else 0.0
+                rvol = self.kite.get_volume_ratio(sym) or 0.0
+                depth = q.get("depth", {})
+                ob_ratio = _compute_5level_depth_ratio(depth)
+                bid, ask = q.get("bid", 0.0), q.get("ask", 0.0)
+                spread = ((ask - bid) / ltp) if (bid > 0 and ask > 0 and ltp > 0) else 0.0
+                day_chg = q.get("change_pct", 0.0)
+                d = evaluate_entry(sym, ltp, vwap, bar_open, bar_close, rvol,
+                                   ob_ratio, spread, day_chg, cfg, atr=atr)
+                if not d.enter:
+                    continue
+                fill = _apply_paper_slippage(d.entry, "buy", "entry")
+                stop, target = stop_target(fill, atr, cfg)
+                verb = "ENTER" if SCALP_MODE_ENABLED else "WOULD-ENTER"
+                print(f"[Scalp] {tag} {verb} {sym} @ {fill:.2f} qty {d.qty} "
+                      f"stop {stop:.2f} tgt {target:.2f} ({d.reason})")
+                self._log_scalp({
+                    "ts": now.isoformat(), "event": "entry", "symbol": sym,
+                    "entry": fill, "qty": d.qty, "stop": stop, "target": target,
+                    "atr": round(atr, 2), "rvol": round(rvol, 2),
+                    "reason": d.reason, "live": bool(SCALP_MODE_ENABLED),
+                })
+                if SCALP_MODE_ENABLED:
+                    self._scalp_positions.append({
+                        "symbol": sym, "entry": fill, "qty": d.qty,
+                        "stop": stop, "target": target, "entry_time": now,
+                    })
+                    open_syms.add(sym)
+                    slots -= 1
+            except Exception:
+                continue
 
     # ── Agent 1: Market Scanner ───────────────────────────────────────────────
 
@@ -2634,6 +2797,33 @@ class TradingCrew:
             )
         except Exception as e:
             print(f"[EOD] Error sending report: {e}")
+
+        # ── Scalp sub-engine daily summary (2026-05-21) ──────────────────────
+        # Separate ledger → separate Telegram line. Wrapped independently so a
+        # scalp-summary failure never affects the conviction EOD report above.
+        try:
+            from tools.scalp_ledger import today_summary
+            from tools.telegram_tools import _send
+            s = today_summary()
+            if s["n"] == 0 and not s["open"]:
+                _send("⚡ <b>SCALP SUMMARY</b>\nNo scalps today.")
+            else:
+                cap = s["cap"]
+                cap_used = (abs(min(s["gross_pnl"], 0)) / cap * 100) if cap else 0
+                cap_line = (f"🛑 cap HIT (₹{cap:,.0f})" if s["cap_hit"]
+                            else f"cap ₹{cap:,.0f} ({cap_used:.0f}% used)")
+                _send(
+                    "⚡ <b>SCALP SUMMARY</b>\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📊 Trades: {s['n']}  ({s['wins']}W / {s['losses']}L, "
+                    f"hit {s['hit_rate']:.0f}%)\n"
+                    f"💰 Net P&L: ₹{s['gross_pnl']:+,.0f}\n"
+                    f"🟢 Best ₹{s['best']:+,.0f}   🔴 Worst ₹{s['worst']:+,.0f}\n"
+                    f"📦 Open at close: {len(s['open'])}\n"
+                    f"🚧 {cap_line}"
+                )
+        except Exception as e:
+            print(f"[EOD] Scalp summary error (non-fatal): {e}")
 
     # ── Utility ───────────────────────────────────────────────────────────────
 

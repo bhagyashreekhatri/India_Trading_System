@@ -67,6 +67,7 @@ from dashboard.live_tab      import render_live_tab
 from dashboard.analytics_tab import render_analytics_tab
 from dashboard.learning_tab  import render_learning_tab
 from dashboard.shadow_tab    import render_shadow_tab
+from dashboard.scalp_tab     import render_scalp_tab
 
 from memory.trade_state  import TradeStateManager
 from memory.chroma_client import ChromaMemory
@@ -274,8 +275,9 @@ with st.sidebar:
 # ── Main ──────────────────────────────────────────────────────────────────────
 st.markdown("# 📈 NSE Intraday Trading System")
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Live Trading",
+    "⚡ Scalp",
     "📈 Analytics",
     "🎓 Learning Lab",
     "👀 Shadow Mode",
@@ -285,12 +287,15 @@ with tab1:
     render_live_tab(state)
 
 with tab2:
-    render_analytics_tab(state, chroma)
+    render_scalp_tab()
 
 with tab3:
-    render_learning_tab()
+    render_analytics_tab(state, chroma)
 
 with tab4:
+    render_learning_tab()
+
+with tab5:
     render_shadow_tab()
 
 

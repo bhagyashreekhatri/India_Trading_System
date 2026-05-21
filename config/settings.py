@@ -692,3 +692,60 @@ def get_active_conviction_risk() -> dict:
 def get_active_conviction_target() -> dict:
     """Return the conviction-engine target-INR table based on probe-mode state."""
     return PROBE_CONVICTION_TARGET_INR if PROBE_MODE_ENABLED else CONVICTION_TARGET_INR
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SCALP MODE  (2026-05-21 — operator directive: "be a scalper, trade daily")
+# ─────────────────────────────────────────────────────────────────────────────
+# Why this exists:
+#   The conviction pipeline (setup-detector + RVOL gate + 6 conviction gates,
+#   all ANDed) took ZERO trades across 10 sessions. A name ripping on 12x
+#   volume above VWAP making higher highs (e.g. ANGELONE 2026-05-21) cannot
+#   clear the base-breakout setup detector (small-body continuation bars are
+#   logged weak_body) and so never reaches scoring. The agent found the winners
+#   and never traded them.
+#
+# Philosophy (agreed with operator):
+#   Move the strictness from the ENTRY to the EXIT. Loosen entry to a pure
+#   stock-structural trigger (above VWAP + last bar up + volume + book not
+#   collapsing + not over-extended), take MANY small shots, and protect each
+#   one with a HARD tight stop, a fast take-profit, a flat-trade scratch, and a
+#   firm daily loss cap. A trap then costs a 0.4% scratch instead of being
+#   something we pre-screen the whole day for.
+#
+# Profile chosen: AGGRESSIVE.  Daily loss cap: ₹30,000 (2% of ₹15L).
+#
+# SHADOW-FIRST: SCALP_MODE_ENABLED defaults False. When False the engine still
+# evaluates and logs `[Scalp] WOULD-ENTER ...` lines but places nothing, so we
+# collect a session of evidence before flipping it live (same pattern as the
+# macro recovery-unlock Fix #205/#206).
+SCALP_MODE_ENABLED              = True     # LIVE (paper) 2026-05-21 — operator call: trade it now
+
+# ── Entry trigger (loosened) ────────────────────────────────────────────────
+SCALP_REQUIRE_ABOVE_VWAP       = True      # LTP must be above session VWAP
+SCALP_REQUIRE_UP_BAR           = True      # last completed bar close > open
+SCALP_RVOL_MIN                 = 1.2       # "volume present" — well below the 1.5 momentum gate
+SCALP_OB_RATIO_MIN             = 0.7       # 5-level bid/sell ≥ 0.7 (light book guard; blocks 2:1 sell-stacked fades)
+SCALP_SPREAD_MAX_PCT           = 0.0015    # 0.15% — slightly looser than the 0.10% conviction spread
+SCALP_MAX_EXT_FROM_VWAP_PCT    = 0.015     # don't chase: skip if LTP > 1.5% above VWAP (blocks parabolic blowoff tops)
+SCALP_CIRCUIT_VETO_PCT         = 0.18      # reuse discovery circuit veto — no entries on ±18% locked names
+
+# ── Exit discipline (where the strictness lives now) ────────────────────────
+# Volatility-scaled stop (2026-05-21): a flat 0.4% sits INSIDE the noise of a
+# high-priced wide-range name (MTARTECH bars swing ₹40-60 but 0.4% of ₹7800 is
+# only ₹31 → whipsawed out of good moves). So the stop is the WIDER of the flat
+# floor and 1× ATR, capped so per-trade ₹risk stays bounded. Target is a fixed
+# R-multiple of whatever the stop turns out to be, so reward:risk is constant.
+SCALP_STOP_PCT                 = 0.004     # floor: stop never tighter than −0.4%
+SCALP_STOP_ATR_MULT            = 1.0       # stop = max(0.4%, 1.0 × ATR of recent bars)
+SCALP_STOP_MAX_PCT             = 0.010     # cap: stop never wider than −1.0% (bounds ₹risk)
+SCALP_TP_R_MULT                = 2.0       # target = 2× the actual stop distance (2:1)
+SCALP_TP_PCT                   = 0.008     # fallback target when ATR unavailable (+0.8%)
+SCALP_SCRATCH_MIN              = 6         # if not > +0.1% after 6 min → scratch out (sneak in, no go, leave)
+SCALP_TIME_STOP_MIN            = 20        # hard max hold — exit at market after 20 min regardless
+
+# ── Sizing / concurrency ────────────────────────────────────────────────────
+SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800 risk at the 0.4% stop)
+SCALP_MAX_POSITIONS            = 5         # more shots than the 3 swing slots; 5×₹2L = ₹10L < ₹15L
+SCALP_DAILY_LOSS_CAP_INR       = 30_000    # halt new scalp entries for the day after ₹30k realized loss
+SCALP_NO_ENTRY_AFTER           = "14:55"   # no fresh scalps in the last ~20 min; manage/close only
