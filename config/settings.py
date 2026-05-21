@@ -749,3 +749,26 @@ SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800
 SCALP_MAX_POSITIONS            = 5         # more shots than the 3 swing slots; 5×₹2L = ₹10L < ₹15L
 SCALP_DAILY_LOSS_CAP_INR       = 30_000    # halt new scalp entries for the day after ₹30k realized loss
 SCALP_NO_ENTRY_AFTER           = "14:55"   # no fresh scalps in the last ~20 min; manage/close only
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ORDER-FLOW STREAM  (2026-05-21 — operator directive: "read the book live, not frozen")
+# ─────────────────────────────────────────────────────────────────────────────
+# Replaces the frozen 5-level snapshot ratio (polled every 3 min) with a LIVE
+# WebSocket feed (Kite KiteTicker) that streams depth + price several times a
+# second. tools/orderflow_metrics.py reads MOTION over a short window — is the
+# book improving, are buyers lifting, is the offer wall being absorbed — the way
+# a human scalper actually reads a tape, instead of one still photo.
+#
+# SHADOW-FIRST: ORDERFLOW_SHADOW=True means the stream runs and logs
+# "[OrderFlow] SYM dynamic=OK/SKIP … vs frozen ob=X" on every scalp candidate,
+# but the actual entry decision still uses the frozen gate. Once a live session
+# proves the dynamic read is sane, flip ORDERFLOW_SHADOW=False and it takes over
+# the book gate (with automatic fallback to the frozen ratio whenever the stream
+# isn't warm yet for a symbol).
+ORDERFLOW_STREAM_ENABLED       = True      # launch the WebSocket at engine boot
+ORDERFLOW_SHADOW               = True      # log dynamic-vs-frozen; don't gate on it yet
+ORDERFLOW_WINDOW_SEC           = 20.0      # rolling window for trend/lift/absorption
+ORDERFLOW_MIN_PRESSURE         = 1.0       # buyers-dominate shortcut (bid5/ask5 ≥ this → OK)
+ORDERFLOW_MIN_LIFT             = 0.55      # ≥55% of windowed volume on upticks = buyers lifting
+ORDERFLOW_MIN_TREND            = 0.10      # book ratio must be improving ≥10% to count as "improving"

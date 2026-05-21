@@ -231,6 +231,28 @@ class TradingCrew:
                                             "DISCOVERY_ALLOW_TRADES", False) else "OFF"
         print(f"[Crew] Discovery engine loaded — shadow mode {shadow_marker}")
 
+        # ── Order-flow WebSocket stream (dynamic book brain) — 2026-05-21 ──
+        # Live KiteTicker feed → per-symbol rolling depth/tape → motion read
+        # (book trend / lift / wall absorption) used by the scalp book gate.
+        # Wrapped so a streaming fault can never stop the engine from booting.
+        self.orderflow = None
+        try:
+            from config.settings import (
+                ORDERFLOW_STREAM_ENABLED, ORDERFLOW_WINDOW_SEC,
+                KITE_API_KEY, KITE_ACCESS_TOKEN,
+            )
+            if ORDERFLOW_STREAM_ENABLED:
+                from data.orderflow_stream import OrderFlowStream
+                self.orderflow = OrderFlowStream(
+                    KITE_API_KEY, KITE_ACCESS_TOKEN, self.kite.get_token,
+                    window_sec=ORDERFLOW_WINDOW_SEC,
+                )
+                self.orderflow.start(list(FULL_UNIVERSE))
+                print("[Crew] Order-flow stream launched — dynamic book brain "
+                      "(shadow until ORDERFLOW_SHADOW=False)")
+        except Exception as e:
+            print(f"[Crew] Order-flow stream init failed (non-fatal): {e}")
+
         self._tick   = 0
         self._breadth_cache: dict = {}    # refreshed every ~15 min
         self._regime_cache:  dict = {}
@@ -438,6 +460,14 @@ class TradingCrew:
         top_sectors = self._breadth_cache.get("top_sectors", [])
         active = self._reorder_by_sector(active, top_sectors)
 
+        # 4a. Keep the order-flow stream subscribed to the live active set so
+        # fresh discovery admits get streamed too (cheap; add-only).
+        if getattr(self, "orderflow", None) is not None:
+            try:
+                self.orderflow.update_subscriptions(active)
+            except Exception as e:
+                print(f"[OrderFlow] subscription refresh failed (non-fatal): {e}")
+
         # 4b. Scalp sub-engine — aggressive stock-structural entries on the same
         # scanned universe, parallel to the conviction path (isolated/wrapped).
         try:
@@ -634,6 +664,12 @@ class TradingCrew:
             ScalpConfig, evaluate_entry, stop_target, daily_cap_hit,
         )
         from agents.conviction_engine import _compute_5level_depth_ratio
+        from tools.orderflow_metrics import supportive as _of_supportive
+        OF_SHADOW    = getattr(S, "ORDERFLOW_SHADOW", True)
+        OF_MIN_P     = getattr(S, "ORDERFLOW_MIN_PRESSURE", 1.0)
+        OF_MIN_LIFT  = getattr(S, "ORDERFLOW_MIN_LIFT", 0.55)
+        OF_MIN_TREND = getattr(S, "ORDERFLOW_MIN_TREND", 0.10)
+        of_stream    = getattr(self, "orderflow", None)
         self._scalp_init_day(now)
         cfg = ScalpConfig.from_settings(S)
         tag = "LIVE" if SCALP_MODE_ENABLED else "SHADOW"
@@ -672,8 +708,32 @@ class TradingCrew:
                 bid, ask = q.get("bid", 0.0), q.get("ask", 0.0)
                 spread = ((ask - bid) / ltp) if (bid > 0 and ask > 0 and ltp > 0) else 0.0
                 day_chg = q.get("change_pct", 0.0)
+
+                # ── Dynamic order-flow book read (replaces the frozen ratio) ──
+                # Shadow: log dynamic-vs-frozen, decide on the frozen ratio.
+                # Live (ORDERFLOW_SHADOW=False): the dynamic read REPLACES the
+                # book gate when the stream is warm — buyers lifting / wall being
+                # absorbed can admit a sell-heavy RESTING book (the ALKEM case).
+                # When the stream isn't warm for this symbol → fall back to frozen.
+                ob_for_eval = ob_ratio
+                if of_stream is not None:
+                    try:
+                        flow = of_stream.get_flow(sym)
+                        ok_dyn, why_dyn = _of_supportive(
+                            flow, OF_MIN_P, OF_MIN_LIFT, OF_MIN_TREND)
+                        if OF_SHADOW:
+                            print(f"[OrderFlow] {sym} dynamic="
+                                  f"{'OK' if ok_dyn else 'SKIP'} ({why_dyn}) "
+                                  f"vs frozen ob={ob_ratio:.2f}  [shadow]")
+                        elif flow.fresh:
+                            if not ok_dyn:
+                                continue                 # dynamic veto
+                            ob_for_eval = 99.0           # dynamic OK → bypass frozen book gate
+                    except Exception as e:
+                        print(f"[OrderFlow] {sym} read error (frozen fallback): {e}")
+
                 d = evaluate_entry(sym, ltp, vwap, bar_open, bar_close, rvol,
-                                   ob_ratio, spread, day_chg, cfg, atr=atr)
+                                   ob_for_eval, spread, day_chg, cfg, atr=atr)
                 if not d.enter:
                     continue
                 fill = _apply_paper_slippage(d.entry, "buy", "entry")
