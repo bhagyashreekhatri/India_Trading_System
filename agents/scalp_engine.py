@@ -58,6 +58,7 @@ class ScalpConfig:
     stop_max_pct:         float = 0.010    # cap — stop never wider than this
     tp_r_mult:            float = 2.0      # target = tp_r_mult × actual stop distance
     tp_pct:               float = 0.008    # fallback target when ATR unavailable
+    scratch_enabled:      bool  = True     # False = no time-scratch; ride to target/stop
     scratch_min:          int   = 6
     time_stop_min:        int   = 20
     # sizing / risk
@@ -82,6 +83,7 @@ class ScalpConfig:
             stop_max_pct=g("SCALP_STOP_MAX_PCT", 0.010),
             tp_r_mult=g("SCALP_TP_R_MULT", 2.0),
             tp_pct=g("SCALP_TP_PCT", 0.008),
+            scratch_enabled=g("SCALP_SCRATCH_ENABLED", True),
             scratch_min=g("SCALP_SCRATCH_MIN", 6),
             time_stop_min=g("SCALP_TIME_STOP_MIN", 20),
             notional_inr=g("SCALP_NOTIONAL_INR", 200_000),
@@ -250,9 +252,11 @@ def evaluate_exit(
     # Take profit
     if bar_high >= target:
         return ExitDecision(True, "target", price=target)
-    # Flat-trade scratch — sneak in, no follow-through, leave
+    # Flat-trade scratch — sneak in, no follow-through, leave.
+    # Disabled by default now (cfg.scratch_enabled=False): it strangled winners on
+    # follow-through days. Let the trade reach target or stop instead.
     in_profit = bar_close >= entry * 1.001
-    if minutes_held >= cfg.scratch_min and not in_profit:
+    if cfg.scratch_enabled and minutes_held >= cfg.scratch_min and not in_profit:
         return ExitDecision(True, "scratch", price=round(bar_close, 2))
     # Hard time stop
     if minutes_held >= cfg.time_stop_min:

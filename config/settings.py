@@ -741,8 +741,23 @@ SCALP_STOP_ATR_MULT            = 1.0       # stop = max(0.4%, 1.0 × ATR of rece
 SCALP_STOP_MAX_PCT             = 0.010     # cap: stop never wider than −1.0% (bounds ₹risk)
 SCALP_TP_R_MULT                = 2.0       # target = 2× the actual stop distance (2:1)
 SCALP_TP_PCT                   = 0.008     # fallback target when ATR unavailable (+0.8%)
-SCALP_SCRATCH_MIN              = 6         # if not > +0.1% after 6 min → scratch out (sneak in, no go, leave)
-SCALP_TIME_STOP_MIN            = 20        # hard max hold — exit at market after 20 min regardless
+# Scratch DISABLED (2026-05-25 — operator + live evidence): the 6-min scratch was
+# strangling winners on follow-through days. Live proof on 2026-05-25: GLENMARK
+# scratched −₹162 then ran to +₹1,930; the two positions the engine did NOT scratch
+# (APOLLO +4.4% past target, TORNTPHARM +0.7%) were the day's winners, while all 9
+# scratched names booked −₹5.8k. So: let trades reach TARGET or STOP, like a human
+# waiting for the move. Chop-day risk is handled by the loss-streak breaker, not by
+# bailing early. (FORTIS that day fell −1.85% — the STOP, not the scratch, caps that.)
+SCALP_SCRATCH_ENABLED          = False     # False = no time-scratch; ride to target/stop
+SCALP_SCRATCH_MIN              = 6         # (only used if SCALP_SCRATCH_ENABLED=True)
+SCALP_TIME_STOP_MIN            = 90        # hard max hold — give the target real room (was 20)
+
+# Chop safety rail (replaces the impatient scratch): if the engine takes this many
+# losing scalps IN A ROW, the tape is hostile → halt new scalps for the day. A win
+# resets the streak. Per-name cooldown stops instantly re-buying a name that just
+# exited red (the OBEROIRLTY/CANBK re-entry churn seen 2026-05-25).
+SCALP_LOSS_STREAK_HALT         = 4         # consecutive losers → stand down for the day
+SCALP_NAME_COOLDOWN_MIN        = 15        # minutes before re-entering a name that just exited red
 
 # ── Sizing / concurrency ────────────────────────────────────────────────────
 SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800 risk at the 0.4% stop)

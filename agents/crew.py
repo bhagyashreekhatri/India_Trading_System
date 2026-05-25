@@ -592,6 +592,9 @@ class TradingCrew:
             self._scalp_day = today
             self._scalp_positions = []
             self._scalp_realized_today = 0.0
+            self._scalp_loss_streak = 0        # consecutive losing scalps (chop detector)
+            self._scalp_halted = False         # set True once loss-streak halt trips
+            self._scalp_cooldown = {}          # symbol -> datetime until re-entry allowed
 
     def _log_scalp(self, rec: dict):
         try:
@@ -650,6 +653,20 @@ class TradingCrew:
                     "day_pnl_inr": round(self._scalp_realized_today, 2),
                     "live": bool(SCALP_MODE_ENABLED),
                 })
+                # ── chop safety rail: loss-streak halt + per-name cooldown ──
+                from datetime import timedelta as _td
+                streak_halt = getattr(S, "SCALP_LOSS_STREAK_HALT", 4)
+                cd_min = getattr(S, "SCALP_NAME_COOLDOWN_MIN", 15)
+                if pnl > 0:
+                    self._scalp_loss_streak = 0          # a winner resets the streak
+                else:
+                    self._scalp_loss_streak = getattr(self, "_scalp_loss_streak", 0) + 1
+                    self._scalp_cooldown[sym] = now + _td(minutes=cd_min)
+                    if (self._scalp_loss_streak >= streak_halt
+                            and not getattr(self, "_scalp_halted", False)):
+                        self._scalp_halted = True
+                        print(f"[Scalp] CHOP HALT — {streak_halt} losing scalps in a row; "
+                              f"no new scalps today (day ₹{self._scalp_realized_today:+,.0f})")
             except Exception as e:
                 print(f"[Scalp] manage {sym} error (holding): {e}")
                 still_open.append(p)
@@ -678,6 +695,8 @@ class TradingCrew:
             print(f"[Scalp] daily loss cap ₹{cfg.daily_loss_cap_inr:,.0f} hit "
                   f"(day ₹{self._scalp_realized_today:+,.0f}) — no new scalps today")
             return
+        if getattr(self, "_scalp_halted", False):
+            return                                  # chop loss-streak halt — done for the day
         if now.time() >= _parse_time(SCALP_NO_ENTRY_AFTER):
             return
         open_syms = {p["symbol"] for p in self._scalp_positions}
@@ -690,6 +709,9 @@ class TradingCrew:
                 break
             if sym in open_syms:
                 continue
+            cd = getattr(self, "_scalp_cooldown", {}).get(sym)
+            if cd is not None and now < cd:
+                continue                            # name exited red recently — let it settle
             try:
                 df, vwap = self.kite.get_vwap_with_candles(sym)
                 if df is None or len(df) < 3 or not vwap:

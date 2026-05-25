@@ -92,9 +92,16 @@ assert ex.exit and ex.reason == "stop" and ex.price == stop, ex
 ex = evaluate_exit(entry, stop, tgt, 1, bar_high=100.9, bar_low=99.9, bar_close=100.7, cfg=cfg)
 assert ex.exit and ex.reason == "target" and ex.price == tgt, ex
 
-# scratch — held past scratch_min, flat (not > +0.1%)
-ex = evaluate_exit(entry, stop, tgt, cfg.scratch_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, cfg=cfg)
+# scratch — held past scratch_min, flat (not > +0.1%)  [only when enabled]
+from dataclasses import replace as _replace
+cfg_scr = _replace(cfg, scratch_enabled=True)
+ex = evaluate_exit(entry, stop, tgt, cfg_scr.scratch_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, cfg=cfg_scr)
 assert ex.exit and ex.reason == "scratch", ex
+
+# scratch DISABLED (the 2026-05-25 fix) → same flat bar must HOLD, ride to target/stop
+cfg_noscr = _replace(cfg, scratch_enabled=False)
+ex = evaluate_exit(entry, stop, tgt, cfg_noscr.scratch_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, cfg=cfg_noscr)
+assert not ex.exit and ex.reason == "hold", ex
 
 # hold — early and in a small profit
 ex = evaluate_exit(entry, stop, tgt, 2, bar_high=100.3, bar_low=99.9, bar_close=100.2, cfg=cfg)
