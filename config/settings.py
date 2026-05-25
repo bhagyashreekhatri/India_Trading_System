@@ -804,7 +804,10 @@ SCALP_CHOP_MAX_POSITIONS       = 2         # fewer concurrent shots until the br
 # the book gate (with automatic fallback to the frozen ratio whenever the stream
 # isn't warm yet for a symbol).
 ORDERFLOW_STREAM_ENABLED       = True      # launch the WebSocket at engine boot
-ORDERFLOW_SHADOW               = True      # log dynamic-vs-frozen; don't gate on it yet
+ORDERFLOW_SHADOW               = False     # LIVE (2026-05-25) — dynamic book read now GATES scalp
+                                           # entries (motion: buyers lifting / wall absorbed),
+                                           # falling back to the frozen ratio only when the
+                                           # stream isn't warm. Validated across shadow sessions.
 ORDERFLOW_WINDOW_SEC           = 20.0      # rolling window for trend/lift/absorption
 ORDERFLOW_MIN_PRESSURE         = 1.0       # buyers-dominate shortcut (bid5/ask5 ≥ this → OK)
 ORDERFLOW_MIN_LIFT             = 0.55      # ≥55% of windowed volume on upticks = buyers lifting

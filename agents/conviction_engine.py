@@ -343,11 +343,19 @@ class ConvictionEngine:
                         failed=[dt_snap.reasoning],
                     )
                 if dt_snap.type == "RANGE_FORMING":
-                    return _skip(
-                        f"day_type_range_compression ({dt_snap.reasoning})",
-                        macro_state=macro_snap.state, fhh_state="ok_but_day_compressed",
-                        failed=[dt_snap.reasoning],
-                    )
+                    # Suppressed on STRONG_GREEN/GREEN (2026-05-25): don't call the
+                    # day "chop" off NIFTY's tight range when macro is up and a
+                    # sector is breaking to its highs. On 2026-05-25 this gate
+                    # blocked UNIONBANK 8.3, BANKBARODA 7.9, ASHOKLEY 7.9 — all of
+                    # which closed at/near their high of day on a STRONG_GREEN tape.
+                    if macro_snap.state not in ("STRONG_GREEN", "GREEN"):
+                        return _skip(
+                            f"day_type_range_compression ({dt_snap.reasoning})",
+                            macro_state=macro_snap.state, fhh_state="ok_but_day_compressed",
+                            failed=[dt_snap.reasoning],
+                        )
+                    print(f"[Conviction] range-gate suppressed on {macro_snap.state} "
+                          f"— sector breakout on a tight index")
                 # TREND_FORMING_UP / BALANCED / WAITING → proceed (BALANCED
                 # is fine — the conviction tier handles caution sizing).
             except Exception as e:
