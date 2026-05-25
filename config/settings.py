@@ -278,7 +278,18 @@ TICK_SIZE               = 0.05
 # entries (any symbol) for N minutes after any closed_loss today. The kill-
 # switch at -2.5% capital is the backstop; this is the intermediate brake.
 # Set to 0 to disable.
-PORTFOLIO_LOSS_COOLDOWN_MIN = 20
+# Shortened 20→8 and suppressed on STRONG_GREEN/GREEN trend (2026-05-25): the
+# 20-min brake blocked A+ setups (JBCHEPHARM 8.7, ADANIENT 8.3, CEATLTD 7.8)
+# during the trending part of the day. A single loss shouldn't lock you out of
+# the best regime for 20 minutes. (Suppression logic in crew.py _allocate.)
+PORTFOLIO_LOSS_COOLDOWN_MIN = 8
+
+# Stall-exit (2026-05-25): the 25/45-min "stalled_no_movement" exit was cutting
+# trades flat right before they worked — it closed conviction INTELLECT for −₹404
+# the same session the scalp engine rode INTELLECT to +₹1,585. Same mistake as
+# the old scalp scratch. Disabled by default → trades ride to TARGET or STOP
+# (EOD squares off; the SL caps the loss). Set True to restore the early cut.
+STALL_EXIT_ENABLED = False
 
 PAPER_SLIPPAGE_ENTRY_BPS  = 12   # 0.12% — realistic mid-cap entry slip
 PAPER_SLIPPAGE_STOP_BPS   = 22   # 0.22% — momentum SL fills slip hardest
@@ -764,6 +775,17 @@ SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800
 SCALP_MAX_POSITIONS            = 5         # more shots than the 3 swing slots; 5×₹2L = ₹10L < ₹15L
 SCALP_DAILY_LOSS_CAP_INR       = 30_000    # halt new scalp entries for the day after ₹30k realized loss
 SCALP_NO_ENTRY_AFTER           = "14:55"   # no fresh scalps in the last ~20 min; manage/close only
+
+# ── Regime-aware sizing (2026-05-25) ────────────────────────────────────────
+# A smart scalper sizes SMALL in the opening compression and presses only once
+# the market shows its hand. On 2026-05-25 every full-stop loser was entered in
+# the opening ~0.30% range BEFORE NIFTY broke its first-hour high (10:35); every
+# winner paid off after. So: while vol-state is COMPRESSED *or* NIFTY hasn't yet
+# broken its first-hour high → trade at half size and fewer concurrent shots.
+# Full size + full slots once the market breaks out.
+SCALP_REGIME_SIZING            = True
+SCALP_CHOP_SIZE_MULT           = 0.5       # half size in compression / pre-breakout
+SCALP_CHOP_MAX_POSITIONS       = 2         # fewer concurrent shots until the breakout
 
 
 # ─────────────────────────────────────────────────────────────────────────────

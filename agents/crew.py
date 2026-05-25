@@ -699,8 +699,31 @@ class TradingCrew:
             return                                  # chop loss-streak halt — done for the day
         if now.time() >= _parse_time(SCALP_NO_ENTRY_AFTER):
             return
+
+        # ── Regime-aware sizing: small in opening compression / pre-breakout ──
+        # Full size + slots only once the market shows its hand (NIFTY breaks its
+        # first-hour high) and vol isn't compressed. Otherwise half-size, fewer shots.
+        size_mult = 1.0
+        eff_max = cfg.max_positions
+        if getattr(S, "SCALP_REGIME_SIZING", True):
+            nifty_broke = True
+            try:
+                _fhh = self.fhh_detector.get_state("NIFTY 50", now)
+                nifty_broke = bool(getattr(_fhh, "clean_high_break", False))
+            except Exception:
+                nifty_broke = True   # fail-open: don't over-restrict on a read error
+            compressed = False
+            try:
+                _vs = self.vol_state.get_state(now)
+                compressed = (getattr(_vs, "regime", "NORMAL") == "COMPRESSED")
+            except Exception:
+                compressed = False
+            if compressed or not nifty_broke:
+                size_mult = getattr(S, "SCALP_CHOP_SIZE_MULT", 0.5)
+                eff_max = min(cfg.max_positions, getattr(S, "SCALP_CHOP_MAX_POSITIONS", 2))
+
         open_syms = {p["symbol"] for p in self._scalp_positions}
-        slots = cfg.max_positions - len(self._scalp_positions)
+        slots = eff_max - len(self._scalp_positions)
         if slots <= 0:
             return
 
@@ -758,20 +781,23 @@ class TradingCrew:
                                    ob_for_eval, spread, day_chg, cfg, atr=atr)
                 if not d.enter:
                     continue
+                qty = max(1, int(d.qty * size_mult))    # regime-aware sizing
                 fill = _apply_paper_slippage(d.entry, "buy", "entry")
                 stop, target = stop_target(fill, atr, cfg)
                 verb = "ENTER" if SCALP_MODE_ENABLED else "WOULD-ENTER"
-                print(f"[Scalp] {tag} {verb} {sym} @ {fill:.2f} qty {d.qty} "
-                      f"stop {stop:.2f} tgt {target:.2f} ({d.reason})")
+                rnote = "" if size_mult >= 1.0 else " [half-size: compression/pre-breakout]"
+                print(f"[Scalp] {tag} {verb} {sym} @ {fill:.2f} qty {qty} "
+                      f"stop {stop:.2f} tgt {target:.2f} ({d.reason}){rnote}")
                 self._log_scalp({
                     "ts": now.isoformat(), "event": "entry", "symbol": sym,
-                    "entry": fill, "qty": d.qty, "stop": stop, "target": target,
+                    "entry": fill, "qty": qty, "stop": stop, "target": target,
                     "atr": round(atr, 2), "rvol": round(rvol, 2),
+                    "size_mult": size_mult,
                     "reason": d.reason, "live": bool(SCALP_MODE_ENABLED),
                 })
                 if SCALP_MODE_ENABLED:
                     self._scalp_positions.append({
-                        "symbol": sym, "entry": fill, "qty": d.qty,
+                        "symbol": sym, "entry": fill, "qty": qty,
                         "stop": stop, "target": target, "entry_time": now,
                     })
                     open_syms.add(sym)
@@ -1675,13 +1701,25 @@ class TradingCrew:
         if _PLC > 0:
             mins_since_loss = self.state.minutes_since_last_portfolio_loss()
             if mins_since_loss is not None and mins_since_loss < _PLC:
-                remaining = _PLC - mins_since_loss
-                print(f"[Allocator] 🛑 PORTFOLIO REVENGE BRAKE — "
-                      f"last loss {mins_since_loss:.0f}m ago, "
-                      f"cooldown {_PLC}m, {remaining:.0f}m remaining. "
-                      f"All new entries blocked across symbols.")
-                self._rej("portfolio_revenge_cooldown")
-                return
+                # Don't sit out a clean uptrend — suppress the brake on
+                # STRONG_GREEN/GREEN (2026-05-25: it blocked JBCHEPHARM 8.7,
+                # ADANIENT 8.3 during the trending leg). Other regimes still brake.
+                _macro_trend = ""
+                try:
+                    _macro_trend = self.market_state.get_state(_now_ist()).state
+                except Exception:
+                    _macro_trend = ""
+                if _macro_trend in ("STRONG_GREEN", "GREEN"):
+                    print(f"[Allocator] revenge-brake suppressed — {_macro_trend} "
+                          f"trend (last loss {mins_since_loss:.0f}m ago)")
+                else:
+                    remaining = _PLC - mins_since_loss
+                    print(f"[Allocator] 🛑 PORTFOLIO REVENGE BRAKE — "
+                          f"last loss {mins_since_loss:.0f}m ago, "
+                          f"cooldown {_PLC}m, {remaining:.0f}m remaining. "
+                          f"All new entries blocked across symbols.")
+                    self._rej("portfolio_revenge_cooldown")
+                    return
 
         # ── Tighten gate at +2R (Fix #11) — ride existing winners only ───────
         # Filter scored candidates to A+/A++ (≥8.0) once today_pnl crosses +2%.
@@ -2466,7 +2504,15 @@ class TradingCrew:
             # Tier 2 (severe): 45 min + |pnl_r| ≤ 0.3 → exit (truly stuck, was
             #   ≤0.15R which almost never fired).
             # `_entry_dt_aware()` (Fix #1) keeps elapsed math correct on UTC host.
-            if not p.tp1_hit and p.entry_time:
+            # Fix (2026-05-25): stall-exit gated behind STALL_EXIT_ENABLED.
+            # It was cutting trades flat right before they worked (conviction
+            # INTELLECT −₹404 vs scalp INTELLECT +₹1,585 same day). Default OFF
+            # → ride to target/stop (EOD squares off; SL caps the loss).
+            try:
+                from config.settings import STALL_EXIT_ENABLED as _STALL_EXIT
+            except ImportError:
+                _STALL_EXIT = True
+            if _STALL_EXIT and not p.tp1_hit and p.entry_time:
                 try:
                     entry_dt = _entry_dt_aware(p.entry_time)
                     elapsed  = (now - entry_dt).total_seconds() / 60
