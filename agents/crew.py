@@ -612,7 +612,7 @@ class TradingCrew:
         gate, so exits fire regardless of the conviction time-gate."""
         from config.settings import SCALP_MODE_ENABLED
         import config.settings as S
-        from agents.scalp_engine import ScalpConfig, evaluate_exit
+        from agents.scalp_engine import ScalpConfig, evaluate_exit, evaluate_manage
         self._scalp_init_day(now)
         if not getattr(self, "_scalp_positions", None):
             return
@@ -625,15 +625,86 @@ class TradingCrew:
                 q = self.kite.get_quotes([sym]).get(sym, {})
                 ltp = q.get("last_price", 0.0) or p["entry"]
                 bar_high = bar_low = ltp
+                atr = float(p.get("atr", 0.0) or 0.0)
                 try:
                     df, _ = self.kite.get_vwap_with_candles(sym)
                     if df is not None and len(df):
                         lb = df.iloc[-1]
                         bar_high = max(ltp, float(lb["high"]))
                         bar_low  = min(ltp, float(lb["low"]))
+                        rng = (df["high"] - df["low"]).tail(5)
+                        if len(rng):
+                            atr = float(rng.mean())   # refresh ATR for the trail
                 except Exception:
                     pass
                 mins = (now - p["entry_time"]).total_seconds() / 60.0
+
+                # ── Runner-capture path (Fix #209) — partial at target + trail ──
+                if cfg.partial_trail_enabled:
+                    md = evaluate_manage(p, mins, bar_high, bar_low, ltp, atr, cfg)
+                    if md.action == "hold":
+                        still_open.append(p); continue
+                    if md.action == "trail_stop":
+                        if md.new_stop > p["stop"]:
+                            print(f"[Scalp] {tag} TRAIL {sym} stop {p['stop']:.2f} → {md.new_stop:.2f}")
+                            p["stop"] = md.new_stop
+                        still_open.append(p); continue
+                    if md.action == "partial_trail":
+                        # Bank part at the target, move stop to breakeven, keep the rest.
+                        fill = _apply_paper_slippage(md.price, "sell", "target")
+                        pnl = (fill - p["entry"]) * md.exit_qty
+                        self._scalp_realized_today += pnl
+                        p["qty_remaining"] = int(p["qty_remaining"]) - md.exit_qty
+                        p["tp1_done"] = True
+                        p["stop"] = md.new_stop          # breakeven
+                        self._scalp_loss_streak = 0      # a banked partial counts as a win
+                        print(f"[Scalp] {tag} TP1 {sym} bank {md.exit_qty} @ {fill:.2f} "
+                              f"→ SL=BE {md.new_stop:.2f}, trail {p['qty_remaining']} "
+                              f"| P&L ₹{pnl:+,.0f} day ₹{self._scalp_realized_today:+,.0f}")
+                        self._log_scalp({
+                            "ts": now.isoformat(), "event": "tp1_partial", "symbol": sym,
+                            "reason": md.reason, "entry": p["entry"], "exit": fill,
+                            "qty": md.exit_qty, "qty_remaining": p["qty_remaining"],
+                            "pnl_inr": round(pnl, 2),
+                            "day_pnl_inr": round(self._scalp_realized_today, 2),
+                            "live": bool(SCALP_MODE_ENABLED),
+                        })
+                        still_open.append(p); continue
+                    # md.action == "exit_full"
+                    exit_qty = md.exit_qty or int(p.get("qty_remaining", p["qty"]))
+                    kind = md.reason if md.reason in ("stop", "target") else "exit"
+                    exit_px = _apply_paper_slippage(md.price, "sell", kind)
+                    pnl = (exit_px - p["entry"]) * exit_qty
+                    self._scalp_realized_today += pnl
+                    print(f"[Scalp] {tag} EXIT {sym} {md.reason} @ {exit_px:.2f} "
+                          f"(entry {p['entry']:.2f} qty {exit_qty}) "
+                          f"P&L ₹{pnl:+,.0f} | day ₹{self._scalp_realized_today:+,.0f}")
+                    self._log_scalp({
+                        "ts": now.isoformat(), "event": "exit", "symbol": sym,
+                        "reason": md.reason, "entry": p["entry"], "exit": exit_px,
+                        "qty": exit_qty, "pnl_inr": round(pnl, 2),
+                        "day_pnl_inr": round(self._scalp_realized_today, 2),
+                        "live": bool(SCALP_MODE_ENABLED),
+                    })
+                    from datetime import timedelta as _td
+                    streak_halt = getattr(S, "SCALP_LOSS_STREAK_HALT", 4)
+                    cd_min = getattr(S, "SCALP_NAME_COOLDOWN_MIN", 15)
+                    # Only a net-losing FINAL exit advances the chop streak. A runner
+                    # that already banked its TP1 partial is not a "loss" even if the
+                    # trailed remainder stops at breakeven.
+                    if pnl > 0 or p.get("tp1_done"):
+                        self._scalp_loss_streak = 0
+                    else:
+                        self._scalp_loss_streak = getattr(self, "_scalp_loss_streak", 0) + 1
+                        self._scalp_cooldown[sym] = now + _td(minutes=cd_min)
+                        if (self._scalp_loss_streak >= streak_halt
+                                and not getattr(self, "_scalp_halted", False)):
+                            self._scalp_halted = True
+                            print(f"[Scalp] CHOP HALT — {streak_halt} losing scalps in a row; "
+                                  f"no new scalps today (day ₹{self._scalp_realized_today:+,.0f})")
+                    continue   # position closed; do not re-add
+
+                # ── Legacy hard-2:1 path (flag off) ──────────────────────────
                 ex = evaluate_exit(p["entry"], p["stop"], p["target"], mins,
                                    bar_high, bar_low, ltp, cfg)
                 if not ex.exit:
@@ -723,6 +794,15 @@ class TradingCrew:
                 eff_max = min(cfg.max_positions, getattr(S, "SCALP_CHOP_MAX_POSITIONS", 2))
 
         open_syms = {p["symbol"] for p in self._scalp_positions}
+        # Cross-engine dedup (Fix #208, 2026-05-29): never let the scalp path open
+        # a name the CONVICTION engine already holds. One position per symbol across
+        # both engines — otherwise we'd double the size and run two conflicting stops
+        # on the same stock. Conviction positions live in the DB; scalp positions in
+        # self._scalp_positions. Union both so each engine sees the other's book.
+        try:
+            open_syms |= {pos.symbol for pos in self.state.get_open_positions()}
+        except Exception as e:
+            print(f"[Scalp] conviction-dedup read error (proceeding scalp-only): {e}")
         slots = eff_max - len(self._scalp_positions)
         if slots <= 0:
             return
@@ -799,6 +879,8 @@ class TradingCrew:
                     self._scalp_positions.append({
                         "symbol": sym, "entry": fill, "qty": qty,
                         "stop": stop, "target": target, "entry_time": now,
+                        # Runner-capture state (Fix #209): track partial fills + trail.
+                        "qty_remaining": qty, "tp1_done": False, "atr": atr,
                     })
                     open_syms.add(sym)
                     slots -= 1
@@ -1795,6 +1877,15 @@ class TradingCrew:
             # Already in this stock
             if any(p.symbol == sym for p in open_pos):
                 self._rej("already_open"); continue
+
+            # Cross-engine dedup (Fix #208, 2026-05-29): the scalp sub-engine runs
+            # EARLIER in this same tick (run_tick step 4b, before allocate at 7).
+            # If it already took this name, conviction must stand down — one
+            # position per symbol across both engines. Scalp positions are
+            # in-memory (never in the DB open_pos above), so check explicitly.
+            if sym in {p["symbol"] for p in getattr(self, "_scalp_positions", [])}:
+                print(f"[Allocator] {sym} held by scalp engine this session — conviction stands down")
+                self._rej("held_by_scalp"); continue
 
             # ── Conviction engine pre-filter ──────────────────────────────
             # This is the heart of the Phase 0 rebuild. Macro state + FHH

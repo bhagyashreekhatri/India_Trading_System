@@ -1,6 +1,15 @@
 # NSE Trading System — Project Memory
-*Last updated: 2026-05-18 ~15:30 IST | Operator: Bhagya*
-*Recent activity: Discovery filter v3→v5 (CF mitigation) + scalper-lens audit fixes #159-162. Conviction engine is now sole decision authority — was being silently nuked by stub-scorer's MIN_SCORE_ENTRY=7.0 gate. HOD proximity relaxed 0.5%→1.2% to allow pullback-to-FHH-retest entries. PROBE_MODE wired through allocator (closed 30× risk footgun for live probe). First live Discovery admit: FCL +19.97% on 2026-05-18.*
+*Last updated: 2026-05-29 ~IST | Operator: Bhagya*
+*Recent activity: Pre-live audit (daily-income/scalper frame) + build wave Fix #207–#209.
+Goal reconfirmed: daily-income scalper-trader, ₹15L CASH in PAPER, operator executes real
+Zerodha fills manually (agent = signal source, stays PAPER_TRADING=True). Shipped:
+RISK_PER_TRADE_PCT 1%→0.5% (#207, real sizing knob; CONVICTION_RISK_INR is vestigial),
+bidirectional conviction↔scalp dedup (#208), scalp runner capture = partial-at-target +
+trail (#209, flagged SCALP_PARTIAL_TRAIL_ENABLED, A/B reversible, justified by 280-trade
+"runners = all net profit"). Verified B2/B3 already fixed (#170/#195 — docs 25/26 stale);
+B5 still band-aided. NEXT: collect logs/scalp_trades.jsonl (~30 scalps) to validate the
+scalp path actually nets green after costs. Full audit: docs/30_PreLive_Audit_DailyIncome_2026-05-29.md.
+Prior note: Discovery LIVE (FCL +19.97% first admit 2026-05-18); conviction is sole authority.*
 
 ---
 
@@ -492,6 +501,53 @@ a base rate for the day's CLOSE, never as an immutable six-hour verdict):
   no-fire, spike+fade no-fire — each in shadow + live). Preflight GO, no regressions.
 - **Rollback:** `MACRO_RECHECK_ENABLED=False` (already the default) reverts to pure
   10:15 lock; set `STOCK_DECOUPLING_MAX_PULL_FROM_HOD_PCT=0.5` to revert the HOD loosen.
+
+**Fix #207–#209 — Pre-live audit build (2026-05-29, daily-income/scalper frame):**
+Context: operator confirmed goal = daily-income scalper-trader, real account = ₹15L
+CASH in PAPER (operator executes real Zerodha fills manually; agent is the signal
+source, stays `PAPER_TRADING=True`). Audit doc: `docs/30_PreLive_Audit_DailyIncome_2026-05-29.md`.
+
+- **Fix #207 — sizing dialed for discipline.** `RISK_PER_TRADE_PCT` 0.01 → **0.005**
+  (`config/settings.py`). This is the REAL conviction sizing knob — qty is sized off
+  `active_capital × RISK_PER_TRADE_PCT × size_mult` (`crew.py:2043`); the
+  `CONVICTION_RISK_INR` table (S=₹1500…) is **vestigial/unused for qty**. At ₹15L,
+  1% = ₹15,000/trade = 2× Doctrine §3's 0.5% ceiling; 0.5% = ₹7,500. R-multiple
+  edge is unchanged (this only scales ₹). `SCALP_NOTIONAL_INR` kept at **₹2,00,000**
+  (briefly tried ₹1L for live-safety, reverted — wrong frame for PAPER; realistic
+  notional = honest cost-% drag in the ledger). Rollback: set back to 0.01.
+
+- **Fix #208 — bidirectional conviction↔scalp dedup.** One position per symbol across
+  BOTH engines. Scalp entry now unions `state.get_open_positions()` into its skip set
+  (`crew.py` `_scalp_new_entries`); conviction `_allocate` skips any symbol already in
+  `self._scalp_positions` (scalp runs earlier in the tick, step 4b, and its positions
+  are in-memory only — never in the DB conviction reads). Prevents double size + two
+  conflicting stops on the same name. Rej tag `held_by_scalp`.
+
+- **Fix #209 — scalp runner capture (partial at target + trail the rest).** The only
+  P&L evidence in the project (280 conviction trades, docs/08 + docs/28) shows ~100%
+  of net profit came from runners (TP2 + trailed); fixed-target exits barely beat
+  costs. The scalp engine's hard 2:1 exit capped exactly the trades that pay. New PURE
+  `evaluate_manage()` + `ManageDecision` in `agents/scalp_engine.py`: at the +0.8%
+  target, bank `SCALP_TP1_FRACTION` (0.5), move stop to breakeven, trail the remainder
+  by `SCALP_TRAIL_ATR_MULT × ATR`. Wired into `crew.py` `_manage_scalp_positions` (with
+  the legacy hard-2:1 path preserved as the flag-off fallback). A net-losing FINAL exit
+  advances the chop loss-streak; a runner that already banked TP1 does not. Flagged
+  `SCALP_PARTIAL_TRAIL_ENABLED=True` (A/B reversible). 6 new unit tests in
+  `tests/test_scalp_engine.py` (`evaluate_manage`) + a live-config lock block. Rollback:
+  set `SCALP_PARTIAL_TRAIL_ENABLED=False`. NOTE: this is the established "let winners
+  run" direction (stall-exit OFF #28, scratch OFF) — but it is NOT yet validated on
+  scalp data; `logs/scalp_trades.jsonl` over ~30 closed scalps decides if it nets green.
+
+**Audit corrections to prior docs (verified against live code 2026-05-29):**
+- B2 (exit-order return check) — FIXED by Fix #170 (`_full_exit`/`_partial_exit_tp1`
+  check `place_order` return + roll back). Doc 25/26 "B2 open" is STALE.
+- B3 (mid-trade naked SL-M) — FIXED by Fix #195 (`_alert_naked_sl`: retry-once +
+  Telegram, deliberate no-auto-exit). Doc 26 "B3 open" is STALE.
+- B5 (HOD uses Kite SESSION high, `conviction_engine.py:136`) — still architecturally
+  open, band-aided to 2.0% via Fix #192. Left per "no scoring surgery <30 trades".
+- 280-trade snapshot is Apr 20–May 8 (PRE-rebuild, PRE-scalp). After realistic costs
+  (₹226 + 0.16%) net = **−₹29,500 (−₹105/trade)**; top 20 trades = 99% of gross. The
+  current build (conviction tiers + scalp + OF brain) has ZERO closed trades on disk.
 
 Cleanup deferrals (cosmetic):
 - **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only

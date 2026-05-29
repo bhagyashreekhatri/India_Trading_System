@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.scalp_engine import (
     ScalpConfig, evaluate_entry, evaluate_exit, stop_target,
-    size_position, daily_cap_hit,
+    size_position, daily_cap_hit, evaluate_manage,
 )
 
 cfg = ScalpConfig()   # dataclass defaults = the shipped profile
@@ -120,5 +120,67 @@ assert not daily_cap_hit(-29_999, cfg)
 assert daily_cap_hit(-30_000, cfg)
 assert daily_cap_hit(-50_000, cfg)
 print("[PASS] sizing + daily loss cap")
+
+# ── runner capture: evaluate_manage (partial at target + trail) ──────────────
+from dataclasses import replace as _replace2
+rc = _replace2(cfg, partial_trail_enabled=True, tp1_fraction=0.5,
+               trail_atr_mult=1.0, scratch_enabled=False, time_stop_min=90)
+
+# entry 100, stop 99.6 (0.4%), target 100.8 (2:1), 100 sh
+def _pos(**kw):
+    base = {"entry": 100.0, "stop": 99.6, "target": 100.8,
+            "qty": 100, "qty_remaining": 100, "tp1_done": False}
+    base.update(kw); return base
+
+# 1. pre-TP1 hard stop → exit_full "stop", whole remaining qty
+md = evaluate_manage(_pos(), 3, bar_high=100.1, bar_low=99.5, bar_close=99.55, atr=0.5, cfg=rc)
+assert md.action == "exit_full" and md.reason == "stop" and md.exit_qty == 100, md
+
+# 2. pre-TP1 target touched → partial bank half, stop to breakeven
+md = evaluate_manage(_pos(), 5, bar_high=100.85, bar_low=100.1, bar_close=100.8, atr=0.5, cfg=rc)
+assert md.action == "partial_trail" and md.reason == "tp1", md
+assert md.exit_qty == 50 and approx(md.new_stop, 100.0), md
+
+# 3. post-TP1 (tp1_done, stop at BE 100.0) price ran to 101.5, ATR 0.5 →
+#    trail up to 101.5 - 1.0×0.5 = 101.0 (ratchets above the BE stop)
+md = evaluate_manage(_pos(stop=100.0, qty_remaining=50, tp1_done=True),
+                     12, bar_high=101.6, bar_low=101.0, bar_close=101.5, atr=0.5, cfg=rc)
+assert md.action == "trail_stop" and approx(md.new_stop, 101.0), md
+
+# 4. post-TP1 trailed stop hit → exit_full "trail_exit" on the remainder
+md = evaluate_manage(_pos(stop=101.0, qty_remaining=50, tp1_done=True),
+                     15, bar_high=101.2, bar_low=100.95, bar_close=101.0, atr=0.5, cfg=rc)
+assert md.action == "exit_full" and md.reason == "trail_exit" and md.exit_qty == 50, md
+
+# 5. pre-TP1 flat past time stop (scratch off) → time_stop exit
+md = evaluate_manage(_pos(), rc.time_stop_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, atr=0.5, cfg=rc)
+assert md.action == "exit_full" and md.reason == "time_stop", md
+
+# 6. pre-TP1 small profit, early → hold
+md = evaluate_manage(_pos(), 4, bar_high=100.3, bar_low=99.9, bar_close=100.2, atr=0.5, cfg=rc)
+assert md.action == "hold", md
+print("[PASS] evaluate_manage runner capture (stop/tp1-partial/trail/trail-exit/time/hold)")
+
+
+# ── live-config lock (2026-05-29) ────────────────────────────────────────────
+# The blocks above test pure exit/entry LOGIC with controlled configs. This block
+# verifies the AS-SHIPPED profile (ScalpConfig.from_settings) matches what the live
+# engine actually trades — so the green checkmark describes the real system, not the
+# dataclass defaults. If someone changes settings.py, this is the tripwire.
+import config.settings as S
+live = ScalpConfig.from_settings(S)
+assert live.scratch_enabled is False, f"live scratch should be DISABLED, got {live.scratch_enabled}"
+assert live.time_stop_min == S.SCALP_TIME_STOP_MIN, f"live time_stop {live.time_stop_min} != settings {S.SCALP_TIME_STOP_MIN}"
+assert live.notional_inr == S.SCALP_NOTIONAL_INR, f"live notional {live.notional_inr} != settings {S.SCALP_NOTIONAL_INR}"
+assert live.daily_loss_cap_inr == S.SCALP_DAILY_LOSS_CAP_INR, "live daily cap drift"
+assert live.partial_trail_enabled == S.SCALP_PARTIAL_TRAIL_ENABLED, "live partial-trail flag drift"
+assert live.tp1_fraction == S.SCALP_TP1_FRACTION, "live tp1_fraction drift"
+# With scratch OFF, a flat bar past scratch_min must HOLD (not scratch) under the LIVE cfg.
+ex = evaluate_exit(100.0, 99.6, 100.8, live.scratch_min + 1,
+                   bar_high=100.2, bar_low=99.9, bar_close=100.0, cfg=live)
+assert not ex.exit and ex.reason == "hold", f"live cfg should HOLD a flat bar (scratch off), got {ex}"
+print(f"[PASS] live-config lock (scratch={live.scratch_enabled} "
+      f"time_stop={live.time_stop_min}m notional=Rs{live.notional_inr:,.0f} "
+      f"daily_cap=Rs{live.daily_loss_cap_inr:,.0f})")
 
 print("=== ALL SCALP-ENGINE TESTS PASSED ===")

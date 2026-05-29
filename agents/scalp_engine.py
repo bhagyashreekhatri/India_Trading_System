@@ -61,6 +61,10 @@ class ScalpConfig:
     scratch_enabled:      bool  = True     # False = no time-scratch; ride to target/stop
     scratch_min:          int   = 6
     time_stop_min:        int   = 20
+    # runner capture (2026-05-29) — partial at target + trail the rest
+    partial_trail_enabled: bool = False    # True = bank tp1_fraction at target, trail remainder
+    tp1_fraction:         float = 0.5      # fraction of qty banked at the target
+    trail_atr_mult:       float = 1.0      # post-target trail distance = trail_atr_mult × ATR
     # sizing / risk
     notional_inr:         float = 200_000
     max_positions:        int   = 5
@@ -86,6 +90,9 @@ class ScalpConfig:
             scratch_enabled=g("SCALP_SCRATCH_ENABLED", True),
             scratch_min=g("SCALP_SCRATCH_MIN", 6),
             time_stop_min=g("SCALP_TIME_STOP_MIN", 20),
+            partial_trail_enabled=g("SCALP_PARTIAL_TRAIL_ENABLED", False),
+            tp1_fraction=g("SCALP_TP1_FRACTION", 0.5),
+            trail_atr_mult=g("SCALP_TRAIL_ATR_MULT", 1.0),
             notional_inr=g("SCALP_NOTIONAL_INR", 200_000),
             max_positions=g("SCALP_MAX_POSITIONS", 5),
             daily_loss_cap_inr=g("SCALP_DAILY_LOSS_CAP_INR", 30_000),
@@ -262,6 +269,87 @@ def evaluate_exit(
     if minutes_held >= cfg.time_stop_min:
         return ExitDecision(True, "time_stop", price=round(bar_close, 2))
     return ExitDecision(False, "hold")
+
+
+# ─── Runner capture: partial-at-target + trail the rest (2026-05-29) ─────────
+# WHY: the only P&L evidence in the project (the 280 conviction trades) showed
+# 100% of net profit came from runners (TP2 + trailed exits); fixed-target exits
+# barely beat costs (docs/08, docs/28). A hard 2:1 scalp exit caps exactly the
+# trades that pay. This mirrors the proven conviction pattern: bank a fraction at
+# the target, move the stop to breakeven, then trail the remainder by ATR so a
+# screaming name (the GLENMARK/ATGL class) can run to +2-4% instead of stopping at
+# +0.8%. PURE + unit-tested. Gated by cfg.partial_trail_enabled (A/B reversible).
+
+@dataclass
+class ManageDecision:
+    action:   str            # "hold" | "exit_full" | "partial_trail" | "trail_stop"
+    reason:   str            # "stop" | "target" | "tp1" | "trail_exit" | "time_stop" | "scratch" | "trail_up" | "hold"
+    price:    float = 0.0    # fill price for exits
+    exit_qty: int   = 0      # qty to sell (full or partial)
+    new_stop: float = 0.0    # for partial_trail / trail_stop
+
+
+def evaluate_manage(
+    pos:          dict,      # {entry, stop, target, qty_remaining, tp1_done, ...}
+    minutes_held: float,
+    bar_high:     float,
+    bar_low:      float,
+    bar_close:    float,
+    atr:          float,
+    cfg:          ScalpConfig,
+) -> ManageDecision:
+    """
+    Runner-aware exit/management for ONE open scalp (long). Precedence:
+
+      1. Hard stop (current p['stop']) — always first, assume worst fill.
+      2. Pre-TP1:  target touched → bank cfg.tp1_fraction at target, move stop to
+                   entry (breakeven), mark tp1_done. Remainder rides the trail.
+      3. Post-TP1: ratchet the stop UP toward (bar_close − trail_atr_mult×ATR);
+                   never lowers. Remainder exits when that trailed stop is hit
+                   (handled by rule 1 on a later bar).
+      4. Pre-TP1 flat too long → scratch (if enabled) / time_stop.
+
+    Backward behaviour: when cfg.partial_trail_enabled is False the caller uses the
+    original evaluate_exit() instead, so this path is fully opt-in/reversible.
+    """
+    entry  = pos["entry"]
+    stop   = pos["stop"]
+    target = pos["target"]
+    qty_r  = int(pos.get("qty_remaining", pos.get("qty", 0)))
+    tp1_done = bool(pos.get("tp1_done", False))
+
+    # 1. Hard stop (covers initial stop, breakeven-after-tp1, and trailed stop)
+    if bar_low <= stop:
+        reason = "trail_exit" if tp1_done else "stop"
+        return ManageDecision("exit_full", reason, price=stop, exit_qty=qty_r)
+
+    if not tp1_done:
+        # 2. Target touched → partial bank + breakeven + begin trail
+        if bar_high >= target:
+            exit_qty = max(1, int(qty_r * cfg.tp1_fraction))
+            if exit_qty >= qty_r:        # tiny position → just take it all at target
+                return ManageDecision("exit_full", "target", price=target, exit_qty=qty_r)
+            return ManageDecision("partial_trail", "tp1", price=target,
+                                  exit_qty=exit_qty, new_stop=round(entry, 2))
+        # 4. flat-trade scratch (only if enabled) then hard time stop
+        in_profit = bar_close >= entry * 1.001
+        if cfg.scratch_enabled and minutes_held >= cfg.scratch_min and not in_profit:
+            return ManageDecision("exit_full", "scratch", price=round(bar_close, 2), exit_qty=qty_r)
+        if minutes_held >= cfg.time_stop_min:
+            return ManageDecision("exit_full", "time_stop", price=round(bar_close, 2), exit_qty=qty_r)
+        return ManageDecision("hold", "hold")
+
+    # 3. Post-TP1: ratchet the trail up (never down). Remainder exits via rule 1.
+    if atr and atr > 0:
+        candidate = round(bar_close - cfg.trail_atr_mult * atr, 2)
+    else:
+        candidate = round(bar_close * (1.0 - cfg.stop_pct), 2)
+    if candidate > stop:
+        return ManageDecision("trail_stop", "trail_up", new_stop=candidate)
+    # Post-TP1 hard time stop backstop (give the runner room but not forever)
+    if minutes_held >= cfg.time_stop_min:
+        return ManageDecision("exit_full", "time_stop", price=round(bar_close, 2), exit_qty=qty_r)
+    return ManageDecision("hold", "hold")
 
 
 # ─── Daily loss cap ──────────────────────────────────────────────────────────

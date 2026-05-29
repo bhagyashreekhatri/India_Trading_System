@@ -33,7 +33,15 @@ CAPITAL                 = 1_500_000
 # ₹1-3k/trade cannot monitor 10 names anyway.
 MAX_POSITIONS           = 3               # paper now matches probe concurrency
 MAX_SECTOR_EXPOSURE     = 0.30
-RISK_PER_TRADE_PCT      = 0.01            # 1% of capital per trade
+RISK_PER_TRADE_PCT      = 0.005           # 0.5% of capital per trade.
+                                          # Fix #207 (2026-05-29) — day-one-live dial: was 0.01 (1%).
+                                          # This is the REAL conviction sizing knob (crew.py:2043
+                                          # risk = active_capital × RISK_PER_TRADE_PCT × size_mult;
+                                          # CONVICTION_RISK_INR is vestigial/unused for qty). At ₹15L,
+                                          # 1% = ₹15,000/trade — DOUBLE Doctrine §3's 0.25-0.5% ceiling.
+                                          # 0.5% = ₹7,500/trade = the Doctrine max. The current build has
+                                          # ZERO live-validated trades; size like there's no proven edge
+                                          # yet. Ramp back toward 0.01 only after 2 weeks of green ledger.
 MAX_POSITION_VALUE_PCT  = 0.10            # 10% per trade (₹1.5L at ₹15L) — fits 10 positions in capital
                                           # Was 0.20 = ran out of capital after 5-6 trades, last entries sized to qty=1
 MIN_RISK_PER_TRADE_PCT  = 0.0003          # 0.03% = ₹450 — pure paranoia floor (qty=1 stops here)
@@ -775,6 +783,20 @@ SCALP_SCRATCH_ENABLED          = False     # False = no time-scratch; ride to ta
 SCALP_SCRATCH_MIN              = 6         # (only used if SCALP_SCRATCH_ENABLED=True)
 SCALP_TIME_STOP_MIN            = 90        # hard max hold — give the target real room (was 20)
 
+# ── Runner capture: partial-at-target + trail the rest (Fix #209, 2026-05-29) ──
+# The only P&L evidence in the project (280 conviction trades, docs/08 + docs/28)
+# showed 100% of net profit came from runners (TP2 + trailed exits); fixed-target
+# exits barely beat costs. A hard 2:1 scalp exit caps exactly the trades that pay.
+# When enabled, the scalp manager banks SCALP_TP1_FRACTION of the position at the
+# +0.8% target, moves the stop to breakeven, and trails the remainder by
+# SCALP_TRAIL_ATR_MULT × ATR so a screaming name can ride to +2-4%. This is the
+# established project direction ("let winners run" — stall-exit OFF, scratch OFF).
+# A/B REVERSIBLE: set False to revert to the pure hard-2:1 exit (evaluate_exit).
+# Logic is pure + unit-tested in tests/test_scalp_engine.py (evaluate_manage).
+SCALP_PARTIAL_TRAIL_ENABLED    = True      # bank partial at target, trail the rest
+SCALP_TP1_FRACTION             = 0.5       # fraction of qty banked at the target
+SCALP_TRAIL_ATR_MULT           = 1.0       # post-target trail = this × ATR of recent bars
+
 # Chop safety rail (replaces the impatient scratch): if the engine takes this many
 # losing scalps IN A ROW, the tape is hostile → halt new scalps for the day. A win
 # resets the streak. Per-name cooldown stops instantly re-buying a name that just
@@ -783,7 +805,15 @@ SCALP_LOSS_STREAK_HALT         = 4         # consecutive losers → stand down f
 SCALP_NAME_COOLDOWN_MIN        = 15        # minutes before re-entering a name that just exited red
 
 # ── Sizing / concurrency ────────────────────────────────────────────────────
-SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800 risk at the 0.4% stop)
+SCALP_NOTIONAL_INR             = 200_000   # ₹2L notional per scalp (≈₹800 risk at the 0.4% stop).
+                                           # 2026-05-29: kept at ₹2L for HONEST PAPER MEASUREMENT.
+                                           # It's paper (₹15L cash) and the operator sizes real Zerodha
+                                           # fills by hand — so the agent's notional exists only to make
+                                           # the paper P&L and the cost-% drag REALISTIC. Costs are mostly
+                                           # %-of-notional + a ~₹226 fixed leg, so at a too-small notional
+                                           # the fixed leg overstates the cost drag and the paper edge looks
+                                           # worse than the real ₹2L scalp would. ₹2L = a realistic scalp
+                                           # clip for a ₹15L book → the ledger we collect is trustworthy.
 SCALP_MAX_POSITIONS            = 5         # more shots than the 3 swing slots; 5×₹2L = ₹10L < ₹15L
 SCALP_DAILY_LOSS_CAP_INR       = 30_000    # halt new scalp entries for the day after ₹30k realized loss
 SCALP_NO_ENTRY_AFTER           = "14:55"   # no fresh scalps in the last ~20 min; manage/close only
