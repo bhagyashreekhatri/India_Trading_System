@@ -44,6 +44,7 @@ from tools.telegram_tools import (
     alert_trade_entry, alert_tp1_hit, alert_trade_exit,
     alert_trailing_sl_moved, alert_consecutive_losses,
     alert_market_breadth, alert_eod_report, alert_system_start,
+    alert_scalp_entry, alert_scalp_tp1, alert_scalp_exit,
 )
 
 from config.universe import FULL_UNIVERSE, get_sector
@@ -669,6 +670,12 @@ class TradingCrew:
                             "day_pnl_inr": round(self._scalp_realized_today, 2),
                             "live": bool(SCALP_MODE_ENABLED),
                         })
+                        if SCALP_MODE_ENABLED:
+                            try:
+                                alert_scalp_tp1(sym, md.exit_qty, fill, md.new_stop,
+                                                p["qty_remaining"], pnl)
+                            except Exception as _ae:
+                                print(f"[Scalp] tp1 alert failed (non-fatal): {_ae}")
                         still_open.append(p); continue
                     # md.action == "exit_full"
                     exit_qty = md.exit_qty or int(p.get("qty_remaining", p["qty"]))
@@ -686,6 +693,12 @@ class TradingCrew:
                         "day_pnl_inr": round(self._scalp_realized_today, 2),
                         "live": bool(SCALP_MODE_ENABLED),
                     })
+                    if SCALP_MODE_ENABLED:
+                        try:
+                            alert_scalp_exit(sym, exit_qty, exit_px, md.reason, pnl,
+                                             self._scalp_realized_today)
+                        except Exception as _ae:
+                            print(f"[Scalp] exit alert failed (non-fatal): {_ae}")
                     from datetime import timedelta as _td
                     streak_halt = getattr(S, "SCALP_LOSS_STREAK_HALT", 4)
                     cd_min = getattr(S, "SCALP_NAME_COOLDOWN_MIN", 15)
@@ -724,6 +737,12 @@ class TradingCrew:
                     "day_pnl_inr": round(self._scalp_realized_today, 2),
                     "live": bool(SCALP_MODE_ENABLED),
                 })
+                if SCALP_MODE_ENABLED:
+                    try:
+                        alert_scalp_exit(sym, p["qty"], exit_px, ex.reason, pnl,
+                                         self._scalp_realized_today)
+                    except Exception as _ae:
+                        print(f"[Scalp] exit alert failed (non-fatal): {_ae}")
                 # ── chop safety rail: loss-streak halt + per-name cooldown ──
                 from datetime import timedelta as _td
                 streak_halt = getattr(S, "SCALP_LOSS_STREAK_HALT", 4)
@@ -884,6 +903,11 @@ class TradingCrew:
                     })
                     open_syms.add(sym)
                     slots -= 1
+                    # Phone the operator — manual mirror depends on a fast alert.
+                    try:
+                        alert_scalp_entry(sym, fill, qty, stop, target, d.reason)
+                    except Exception as _ae:
+                        print(f"[Scalp] entry alert failed (non-fatal): {_ae}")
             except Exception:
                 continue
 
@@ -3021,23 +3045,32 @@ class TradingCrew:
         # Separate ledger → separate Telegram line. Wrapped independently so a
         # scalp-summary failure never affects the conviction EOD report above.
         try:
-            from tools.scalp_ledger import today_summary
+            from tools.scalp_ledger import today_summary, _today_iso
+            from tools.analyze_scalp_ledger import load_all, group_trades, summary_stats
             from tools.telegram_tools import _send
-            s = today_summary()
-            if s["n"] == 0 and not s["open"]:
+            s = today_summary()                         # open count + cap context
+            # TRUE net-after-cost (Fix #210): the old summary printed GROSS labelled
+            # as "Net" — no brokerage/STT subtracted. Use the analyzer's cost model.
+            trades = group_trades(load_all(day=_today_iso()))
+            st = summary_stats(trades)
+            if st["n"] == 0 and not s["open"]:
                 _send("⚡ <b>SCALP SUMMARY</b>\nNo scalps today.")
             else:
                 cap = s["cap"]
-                cap_used = (abs(min(s["gross_pnl"], 0)) / cap * 100) if cap else 0
-                cap_line = (f"🛑 cap HIT (₹{cap:,.0f})" if s["cap_hit"]
+                cap_used = (abs(min(st["net"], 0)) / cap * 100) if cap else 0
+                cap_line = (f"🛑 cap HIT (₹{cap:,.0f})" if (st["net"] <= -abs(cap))
                             else f"cap ₹{cap:,.0f} ({cap_used:.0f}% used)")
+                edge = ("✅ above breakeven" if st["above_breakeven"]
+                        else "⚠️ below breakeven")
                 _send(
-                    "⚡ <b>SCALP SUMMARY</b>\n"
+                    "⚡ <b>SCALP SUMMARY</b> (net of costs)\n"
                     "━━━━━━━━━━━━━━━━━━━━\n"
-                    f"📊 Trades: {s['n']}  ({s['wins']}W / {s['losses']}L, "
-                    f"hit {s['hit_rate']:.0f}%)\n"
-                    f"💰 Net P&L: ₹{s['gross_pnl']:+,.0f}\n"
-                    f"🟢 Best ₹{s['best']:+,.0f}   🔴 Worst ₹{s['worst']:+,.0f}\n"
+                    f"📊 Trades: {st['n']}  ({st['wins']}W / {st['losses']}L, "
+                    f"hit {st['wr']:.0f}%)\n"
+                    f"💰 NET P&L: ₹{st['net']:+,.0f}  (gross ₹{st['gross']:+,.0f} "
+                    f"− costs ₹{st['costs']:,.0f})\n"
+                    f"📈 Avg net win ₹{st['avg_win']:+,.0f} / loss ₹{st['avg_loss']:+,.0f}\n"
+                    f"🎯 Breakeven WR {st['breakeven_wr']:.0f}% → {edge}\n"
                     f"📦 Open at close: {len(s['open'])}\n"
                     f"🚧 {cap_line}"
                 )

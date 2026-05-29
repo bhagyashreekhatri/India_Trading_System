@@ -28,6 +28,51 @@ def _send(message: str) -> bool:
         return False
 
 
+def alert_scalp_entry(symbol: str, entry: float, qty: int, stop: float,
+                      target: float, reason: str = ""):
+    """Scalp ENTER — manual-mirror operator needs this on the phone within seconds."""
+    now    = datetime.now(IST).strftime("%H:%M:%S IST")
+    sl_pct = abs(entry - stop) / entry * 100 if entry else 0.0
+    tp_pct = abs(target - entry) / entry * 100 if entry else 0.0
+    _send(
+        f"⚡ <b>SCALP ENTER</b> — {now}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>{symbol}</b>  BUY {qty} @ ₹{entry:.2f}\n"
+        f"🛑 SL ₹{stop:.2f} (−{sl_pct:.2f}%)   🎯 TP ₹{target:.2f} (+{tp_pct:.2f}%)\n"
+        f"📊 {reason}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"<b>Mirror within 30s</b> — limit ±0.1%, then place SL."
+    )
+
+
+def alert_scalp_tp1(symbol: str, exit_qty: int, fill: float, be_stop: float,
+                    qty_left: int, pnl: float):
+    """Scalp TP1 partial — bank half, move stop to breakeven, trail the rest."""
+    now = datetime.now(IST).strftime("%H:%M:%S IST")
+    _send(
+        f"⚡ <b>SCALP TP1</b> — {now}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>{symbol}</b>  SELL {exit_qty} @ ₹{fill:.2f}  (P&L ₹{pnl:+,.0f})\n"
+        f"➡️ Move SL → breakeven ₹{be_stop:.2f} on remaining {qty_left}\n"
+        f"Let the runner run — agent trails it."
+    )
+
+
+def alert_scalp_exit(symbol: str, exit_qty: int, fill: float, reason: str,
+                     pnl: float, day_pnl: float):
+    """Scalp full/remainder EXIT."""
+    now  = datetime.now(IST).strftime("%H:%M:%S IST")
+    emo  = "🟢" if pnl >= 0 else "🔴"
+    _send(
+        f"{emo} <b>SCALP EXIT</b> — {now}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"📌 <b>{symbol}</b>  SELL {exit_qty} @ ₹{fill:.2f}  ({reason})\n"
+        f"💰 Trade P&L ₹{pnl:+,.0f}   |   Day ₹{day_pnl:+,.0f}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"Square off your mirror at market now."
+    )
+
+
 def alert_trade_entry(
     symbol:       str,
     setup_type:   str,

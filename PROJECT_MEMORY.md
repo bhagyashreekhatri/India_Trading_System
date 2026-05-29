@@ -549,6 +549,35 @@ source, stays `PAPER_TRADING=True`). Audit doc: `docs/30_PreLive_Audit_DailyInco
   (₹226 + 0.16%) net = **−₹29,500 (−₹105/trade)**; top 20 trades = 99% of gross. The
   current build (conviction tiers + scalp + OF brain) has ZERO closed trades on disk.
 
+**Fix #210–#211 + tooling — observability/cleanup wave (2026-05-29):**
+- **Scalp Telegram alerts** — `alert_scalp_entry/tp1/exit` added to `tools/telegram_tools.py`,
+  wired at all scalp event sites in `crew.py` (guarded by `SCALP_MODE_ENABLED`). Manual-
+  mirror operator now gets ENTER/TP1/EXIT on the phone; previously scalp signals were
+  server-log-only (operator was blind to the daily-income engine).
+- **`tools/analyze_scalp_ledger.py`** — new analyzer over `logs/scalp_trades.jsonl`:
+  groups entry→tp1_partial→exit into trades, applies a brokerage+STT cost model on top of
+  the ledger's paper-slippage pnl, reports NET WR / net P&L / breakeven-WR / by-reason /
+  runner-capture lift. Reusable `summary_stats()`. Run: `python3 tools/analyze_scalp_ledger.py`.
+- **Fix #210 — EOD scalp summary now reports TRUE net-after-cost.** The old EOD summary
+  printed GROSS pnl labelled "Net" (no brokerage/STT). Now uses `summary_stats()` →
+  net, gross, costs, avg net win/loss, and an above/below-breakeven verdict (`crew.py`).
+- **Fix #211 — removed the dead 09:30–10:30 ORB clock gate** (`tools/pattern_tools.py`).
+  Three-Laws Law-1 violation in a dormant (uncalled) helper; zero behaviour change.
+
+**Pre-live blocker status (verified 2026-05-29) — docs 25/26 are STALE:**
+B1 #184 · B2 #170 · B3 #195 · B4 #186 · B6 #196 — ALL FIXED. Only **B5** remains (conviction
+HOD reads Kite SESSION high `conviction_engine.py:136`, band-aided to 2.0% via #192;
+proper rolling-intraday-high deferred — touches conviction entry, needs 30 trades).
+
+**DELIBERATELY NOT BUILT (2026-05-29) — data-gated or bloat, per operator's hard rules:**
+- Entry tuning (ext%/rvol), macro-aware scalp stand-down, A++ demotion, B5 rolling-high,
+  tp2 retune — ALL need the live ledger first (curve-fitting blind = forbidden).
+- Sector-strength score, trend-quality classifier, focus-list state machine, premarket
+  brief, weekly-review job — net-new complexity with no removal; deferred.
+- `settings.py` dead-constant cleanup (Phase 1.8) — DEFERRED: some "dead" constants are
+  still referenced (SCORE_SIZE_TIERS@2040, MIN_SCORE_ENTRY@2013); removal = real break
+  risk for cosmetic gain on a live system. Not worth it now.
+
 Cleanup deferrals (cosmetic):
 - **Phase 1.8 (deprecated constants cleanup)** — DEFERRED, cosmetic only
 - **PROJECT_MEMORY Fix #75-#82** — ✅ ADDED above (this entry self-completes)

@@ -198,13 +198,14 @@ def _detect_orb_breakout(
     Bullish: last close > orb_high with body near top.
     Returns signal dict or None.
     """
-    now_ist = datetime.now(IST).time()
-    # Fix #46 (P3) — ORB only valid 09:30–10:30 IST. Late ORB breakouts (after
-    # 10:30) historically have ~40% WR vs 65–70% in the proper window.
-    # The edge decays with time elapsed since the range completed.
-    if now_ist < dtime(9, 30) or now_ist > dtime(10, 30):
-        return None
-
+    # Fix #211 (2026-05-29) — REMOVED the hardcoded 09:30–10:30 IST clock gate
+    # (was: `if now_ist < dtime(9,30) or now_ist > dtime(10,30): return None`).
+    # That was a Three-Laws Law-1 violation (clock category in code). This
+    # detector is dormant (NOT called from production paths — see banner), kept
+    # only as a helper for a future "conditional re-arm on GREEN macro days".
+    # Per PROJECT_MEMORY, the clock gate had to be removed before any re-arm;
+    # the structural validity of an ORB is "opening range complete AND not yet
+    # invalidated", which the level/break logic below already encodes — no clock.
     orb = _get_orb_levels(symbol)
     if not orb:
         return None
