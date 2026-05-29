@@ -457,8 +457,23 @@ class TradeStateManager:
         the first non-losing day. Days with ZERO closed trades are skipped
         (don't reset the streak — silent days are neutral).
 
+        Fix #183 (2026-05-29): Honors CONSECUTIVE_LOSING_DAYS_RESET_AFTER from
+        settings. Any losing day BEFORE that cutoff is excluded from the count
+        (treated as "doesn't count" — not a reset, not a continuation). Use
+        this whenever a structural fix wave lands and prior losing days no
+        longer represent the current system.
+
         Used by the CONSECUTIVE_LOSING_DAYS_PAUSE safety net.
         """
+        # Resolve cutoff (None or "YYYY-MM-DD")
+        cutoff_iso: Optional[str] = None
+        try:
+            from config.settings import CONSECUTIVE_LOSING_DAYS_RESET_AFTER as _cutoff
+            if _cutoff:
+                cutoff_iso = str(_cutoff)
+        except Exception:
+            cutoff_iso = None
+
         with self._conn() as conn:
             # Aggregate closed-trade P&L per entry-date over the last 60 days
             rows = conn.execute(
@@ -481,6 +496,10 @@ class TradeStateManager:
             day = r["day"]
             # Skip today itself — we're counting completed prior days
             if day == today_iso:
+                continue
+            # Fix #183: any day before the cutoff is excluded from the count.
+            # Skip silently — don't break the streak, don't add to it.
+            if cutoff_iso and day < cutoff_iso:
                 continue
             pnl = float(r["day_pnl"]) if r["day_pnl"] is not None else 0.0
             if pnl < 0:

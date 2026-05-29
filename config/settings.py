@@ -192,7 +192,19 @@ DAILY_PROFIT_TIGHTEN_PCT = 0.020         # 2% (₹30k) → raise score gate to c
 # operation. Their job is to pause the system before a chain of bad sessions
 # compounds. All thresholds are pct of CAPITAL, scale automatically.
 WEEKLY_LOSS_KILL_PCT      = 0.075        # 7.5% of CAPITAL → auto-pause until manual review
-CONSECUTIVE_LOSING_DAYS_PAUSE = 5        # 5 losing days in a row → auto-pause
+CONSECUTIVE_LOSING_DAYS_PAUSE = 8        # 8 losing days in a row → auto-pause
+                                          # Fix #182 (2026-05-29): was 5. The 5-day pause
+                                          # tripped on losing days from BEFORE the recent
+                                          # fix wave (stall-exit-off, range-gate suppress,
+                                          # OF brain live, regime-sizing) and stranded the
+                                          # conviction engine on days it should have traded
+                                          # (ATGL +7.6% on 2026-05-26). 8 is still a real
+                                          # circuit breaker; 5 was too tight given the
+                                          # regime of changes.
+# Fix #183 (2026-05-29): cutoff date — any losing day BEFORE this is excluded from
+# the consecutive-losing-days count. Use whenever a structural fix wave lands and the
+# prior losing days no longer represent the current system. Set to None to count all.
+CONSECUTIVE_LOSING_DAYS_RESET_AFTER = "2026-05-28"   # only count days ≥ this
 MONTHLY_NEG_R_REVIEW      = True         # on last trading day of month, EOD job flags if mean R<0
 
 
