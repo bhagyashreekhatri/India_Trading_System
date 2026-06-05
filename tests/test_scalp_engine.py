@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agents.scalp_engine import (
     ScalpConfig, evaluate_entry, evaluate_exit, stop_target,
     size_position, daily_cap_hit, evaluate_manage,
+    classify_regime, leadership_score,
 )
 
 cfg = ScalpConfig()   # dataclass defaults = the shipped profile
@@ -175,6 +176,40 @@ assert md.action == "exit_full" and md.reason == "time_stop", f"runner backstop 
 md = evaluate_manage(_pos(), 4, bar_high=100.3, bar_low=99.9, bar_close=100.2, atr=0.5, cfg=rc)
 assert md.action == "hold", md
 print("[PASS] evaluate_manage runner capture (stop/tp1-partial/trail/trail-exit/time/hold)")
+
+
+# ── hybrid regime ladder: classify_regime ───────────────────────────────────
+# RISK_ON: green macro + NIFTY FHH broken + breadth≥55 + not compressed
+r = classify_regime("GREEN", True, True, 60.0, False, False, cfg)
+assert r.regime == "RISK_ON" and r.size_mult == 1.0 and r.max_slots == 5, r
+# RISK_OFF by macro (red overrides everything)
+r = classify_regime("RED", True, True, 80.0, False, False, cfg)
+assert r.regime == "RISK_OFF" and r.size_mult == 0.25 and r.max_slots == 1, r
+# RISK_OFF by whipsaw even on green macro
+r = classify_regime("GREEN", True, True, 70.0, True, False, cfg)
+assert r.regime == "RISK_OFF", r
+# RISK_OFF by index<VWAP + weak breadth
+r = classify_regime("YELLOW", False, False, 30.0, False, False, cfg)
+assert r.regime == "RISK_OFF", r
+# BALANCED: green but FHH not broken
+r = classify_regime("GREEN", False, True, 70.0, False, False, cfg)
+assert r.regime == "BALANCED" and r.size_mult == 0.5 and r.max_slots == 3, r
+# BALANCED: green + FHH but breadth too thin (<55)
+r = classify_regime("GREEN", True, True, 50.0, False, False, cfg)
+assert r.regime == "BALANCED", r
+# BALANCED: would-be risk-on but compressed
+r = classify_regime("STRONG_GREEN", True, True, 70.0, False, True, cfg)
+assert r.regime == "BALANCED", r
+print("[PASS] classify_regime hybrid ladder (risk-on/balanced/risk-off)")
+
+# ── leadership ranking: leadership_score ─────────────────────────────────────
+assert approx(leadership_score(3.0, 1.0, 2.0), 4.0), "RS×RVOL"      # (3-1)*2
+assert approx(leadership_score(1.0, 2.0, 1.0), -1.0), "laggard negative"
+# a stronger leader must outrank a weaker one
+strong = leadership_score(4.0, 0.5, 1.5)
+weak   = leadership_score(1.2, 0.5, 1.0)
+assert strong > weak, (strong, weak)
+print("[PASS] leadership_score (relative strength × participation)")
 
 
 # ── live-config lock (2026-05-29) ────────────────────────────────────────────

@@ -790,27 +790,53 @@ class TradingCrew:
         if now.time() >= _parse_time(SCALP_NO_ENTRY_AFTER):
             return
 
-        # ── Regime-aware sizing: small in opening compression / pre-breakout ──
-        # Full size + slots only once the market shows its hand (NIFTY breaks its
-        # first-hour high) and vol isn't compressed. Otherwise half-size, fewer shots.
+        # ── Hybrid regime ladder (Fix #214) — size & slots scale with the index ──
+        # Replaces the old binary (compression→half). 3-tier read from signals
+        # already on hand: macro 10:15 state, NIFTY first-hour-high break, breadth%,
+        # whipsaw, vol-compression. RISK_ON=full / BALANCED=half / RISK_OFF=quarter.
+        # Never fully off (operator directive) — risk-off still takes its best shot.
         size_mult = 1.0
         eff_max = cfg.max_positions
+        regime_label = "RISK_ON"
         if getattr(S, "SCALP_REGIME_SIZING", True):
-            nifty_broke = True
+            from agents.scalp_engine import classify_regime
+            try:
+                macro_state = self.market_state.get_state(now).state
+            except Exception:
+                macro_state = "YELLOW"
             try:
                 _fhh = self.fhh_detector.get_state("NIFTY 50", now)
                 nifty_broke = bool(getattr(_fhh, "clean_high_break", False))
+                whip = bool(getattr(_fhh, "whipsaw", False))
             except Exception:
-                nifty_broke = True   # fail-open: don't over-restrict on a read error
-            compressed = False
+                nifty_broke, whip = False, False
             try:
                 _vs = self.vol_state.get_state(now)
                 compressed = (getattr(_vs, "regime", "NORMAL") == "COMPRESSED")
             except Exception:
                 compressed = False
-            if compressed or not nifty_broke:
-                size_mult = getattr(S, "SCALP_CHOP_SIZE_MULT", 0.5)
-                eff_max = min(cfg.max_positions, getattr(S, "SCALP_CHOP_MAX_POSITIONS", 2))
+            breadth_pct = float(self._breadth_cache.get("breadth_pct", 60.0))
+            nifty_above = bool(self._regime_cache.get("nifty_above_vwap", True))
+            rs = classify_regime(macro_state, nifty_broke, nifty_above,
+                                 breadth_pct, whip, compressed, cfg)
+            size_mult, eff_max, regime_label = rs.size_mult, min(cfg.max_positions, rs.max_slots), rs.regime
+            print(f"[Scalp] regime={rs.regime} size×{size_mult} slots={eff_max} "
+                  f"(macro={macro_state} nifty_fhh={nifty_broke} breadth={breadth_pct:.0f}% "
+                  f"whip={whip} compressed={compressed})")
+
+        # ── Leadership ranking (Fix #214) — fill slots with the STRONGEST first ──
+        # Buy the leaders, not whatever scans first. Cheap: relative strength from
+        # the per-tick quote cache (stock change_pct − NIFTY change_pct); no extra
+        # API calls. RVOL is already gated at entry, so it's not needed for the sort.
+        try:
+            from agents.scalp_engine import leadership_score
+            nifty_chg = float((self._quote_cache.get("NIFTY 50", {}) or {}).get("change_pct", 0.0))
+            def _lead_key(_sym):
+                _q = (self._quote_cache.get(_sym, {}) or {})
+                return leadership_score(float(_q.get("change_pct", 0.0)), nifty_chg)
+            active = sorted(active, key=_lead_key, reverse=True)
+        except Exception as _le:
+            print(f"[Scalp] leadership ranking skipped (non-fatal): {_le}")
 
         open_syms = {p["symbol"] for p in self._scalp_positions}
         # Cross-engine dedup (Fix #208, 2026-05-29): never let the scalp path open

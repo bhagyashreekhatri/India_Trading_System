@@ -581,6 +581,29 @@ source, stays `PAPER_TRADING=True`). Audit doc: `docs/30_PreLive_Audit_DailyInco
   recycles at 30, holds at 29; post-TP1 rides past 30, backstops at 90) + live-config lock.
   Rollback: set SCALP_PRETP1_TIMEOUT_MIN = SCALP_TIME_STOP_MIN.
 
+- **Fix #214 — hybrid regime ladder + leadership ranking (scalp path).** Operator
+  directive: aggressive, never idle, but not regime-blind. (a) `classify_regime()` pure
+  fn — 3-tier read from macro 10:15 / NIFTY-FHH-break / breadth% / whipsaw / vol-compression:
+  RISK_ON (green+FHH+breadth≥55%+not-compressed → full size, 5 slots) / BALANCED (half, 3) /
+  RISK_OFF (macro red OR whipsaw OR index<VWAP&breadth<40% → quarter, 1 slot). NEVER fully
+  off. Replaces the old binary compression→half check in `_scalp_new_entries`. (b)
+  `leadership_score()` pure fn — sorts candidates by relative strength (stock chg − NIFTY chg,
+  ×RVOL) so slots fill with the STRONGEST in-play names first ("buy leaders"); cheap, reads
+  per-tick quote cache, no extra API calls. Settings: SCALP_{RISKON,BALANCED,RISKOFF}_{SIZE_MULT,SLOTS};
+  master switch SCALP_REGIME_SIZING (False = flat full-size). 9 unit tests (ladder + leadership).
+  Rollback: SCALP_REGIME_SIZING=False. This is the LAST strategic build before go-live.
+
+**DELIBERATELY NOT BUILT before go-live (validation-gated bloat — operator's own rule):**
+focus-list state machine, premarket brief, weekly-review job, sector-rotation detector,
+trend-quality classifier. These are unproven complexity; piling them in the night before a
+live mirror = the exact "8 weeks of code in 1 week then hit time-on-tape wall" mistake doc 26
+records. Build only AFTER the ledger justifies. B5 (conviction HOD session-high) still deferred.
+
+**GO-LIVE READINESS (2026-05-29, verified):** PAPER_TRADING=True (manual mirror), PROBE off
+(sizing off ₹15L), conviction+scalp+runner-capture+OF-live+regime-ladder all ON, risk 0.5%,
+daily caps in place. test_scalp_engine + test_orderflow PASS; test_engine.py = 12 known-stale
+failures (pre-existing, NOT a regression — references removed ScoringEngine internals).
+
 FINAL SCALP GATE SHEET (operator-approved "smart-aggressive", 2026-05-29):
   ENTRY (loose by design — strictness lives at the exit):
     above_vwap=True · up_bar=True · rvol≥1.2 · ob_ratio≥0.7 (OF brain gates live) ·

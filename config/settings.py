@@ -840,9 +840,27 @@ SCALP_NO_ENTRY_AFTER           = "14:55"   # no fresh scalps in the last ~20 min
 # winner paid off after. So: while vol-state is COMPRESSED *or* NIFTY hasn't yet
 # broken its first-hour high → trade at half size and fewer concurrent shots.
 # Full size + full slots once the market breaks out.
-SCALP_REGIME_SIZING            = True
-SCALP_CHOP_SIZE_MULT           = 0.5       # half size in compression / pre-breakout
-SCALP_CHOP_MAX_POSITIONS       = 2         # fewer concurrent shots until the breakout
+SCALP_REGIME_SIZING            = True      # master switch for the regime ladder
+SCALP_CHOP_SIZE_MULT           = 0.5       # (legacy binary — superseded by the ladder below)
+SCALP_CHOP_MAX_POSITIONS       = 2         # (legacy binary — superseded by the ladder below)
+
+# ── Hybrid regime ladder (Fix #214, 2026-05-29) — operator directive ─────────
+# Replaces the old binary (compression → half) with a 3-tier read of the INDEX
+# regime, computed in crew from signals already on hand (macro 10:15 state, NIFTY
+# first-hour-high break, breadth %, whipsaw, vol-compression). Size & slots scale
+# with the tape. NEVER fully off — risk-off still trades, just smallest+selective.
+#   RISK_ON  (macro green + NIFTY FHH broken + breadth≥55% + not compressed) → full
+#   BALANCED (everything in between)                                          → half
+#   RISK_OFF (macro red, OR whipsaw, OR index<VWAP & breadth<40%)            → quarter
+# Aggression lives here: on a clean day you're full-size across all 5 slots,
+# holding the strongest names (see leadership ranking). Rollback: set
+# SCALP_REGIME_SIZING=False (reverts to flat full-size, no ladder).
+SCALP_RISKON_SIZE_MULT         = 1.0
+SCALP_RISKON_SLOTS             = 5
+SCALP_BALANCED_SIZE_MULT       = 0.5
+SCALP_BALANCED_SLOTS           = 3
+SCALP_RISKOFF_SIZE_MULT        = 0.25
+SCALP_RISKOFF_SLOTS            = 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────

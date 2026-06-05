@@ -70,6 +70,13 @@ class ScalpConfig:
     notional_inr:         float = 200_000
     max_positions:        int   = 5
     daily_loss_cap_inr:   float = 30_000
+    # hybrid regime ladder (2026-05-29) — size & slots scale with the index regime
+    riskon_size_mult:     float = 1.0
+    riskon_slots:         int   = 5
+    balanced_size_mult:   float = 0.5
+    balanced_slots:       int   = 3
+    riskoff_size_mult:    float = 0.25
+    riskoff_slots:        int   = 1
 
     @classmethod
     def from_settings(cls, s) -> "ScalpConfig":
@@ -98,6 +105,12 @@ class ScalpConfig:
             notional_inr=g("SCALP_NOTIONAL_INR", 200_000),
             max_positions=g("SCALP_MAX_POSITIONS", 5),
             daily_loss_cap_inr=g("SCALP_DAILY_LOSS_CAP_INR", 30_000),
+            riskon_size_mult=g("SCALP_RISKON_SIZE_MULT", 1.0),
+            riskon_slots=g("SCALP_RISKON_SLOTS", 5),
+            balanced_size_mult=g("SCALP_BALANCED_SIZE_MULT", 0.5),
+            balanced_slots=g("SCALP_BALANCED_SLOTS", 3),
+            riskoff_size_mult=g("SCALP_RISKOFF_SIZE_MULT", 0.25),
+            riskoff_slots=g("SCALP_RISKOFF_SLOTS", 1),
         )
 
 
@@ -356,6 +369,56 @@ def evaluate_manage(
     if minutes_held >= cfg.time_stop_min:
         return ManageDecision("exit_full", "time_stop", price=round(bar_close, 2), exit_qty=qty_r)
     return ManageDecision("hold", "hold")
+
+
+# ─── Hybrid regime ladder + leadership ranking (2026-05-29) ──────────────────
+# Operator directive: aggressive, never idle, but not regime-blind. The scalp
+# engine sizes & slots by the INDEX regime (never fully off — risk-off still
+# trades, just smallest + most selective), and fills its slots with the
+# STRONGEST in-play names first (buy leaders, not laggards). Both PURE + tested.
+
+@dataclass
+class RegimeSizing:
+    regime:    str       # "RISK_ON" | "BALANCED" | "RISK_OFF"
+    size_mult: float     # multiply base notional / qty
+    max_slots: int       # concurrent scalp slots allowed
+
+
+def classify_regime(
+    macro_state:      str,     # "STRONG_GREEN"|"GREEN"|"YELLOW"|"RED"|"STRONG_RED"|"WAITING"
+    nifty_fhh_broken: bool,    # NIFTY cleanly broke its first-hour high
+    nifty_above_vwap: bool,
+    breadth_pct:      float,   # 0-100, % of sampled names above VWAP
+    whipsaw:          bool,    # NIFTY broke BOTH first-hour high and low
+    compressed:       bool,    # volatility state == COMPRESSED
+    cfg:              ScalpConfig,
+) -> RegimeSizing:
+    """
+    Hybrid 3-tier ladder (operator choice 2026-05-29). NEVER fully off.
+
+      RISK_OFF — adverse tape: macro RED/STRONG_RED, OR a whipsaw index, OR
+                 index below VWAP with weak breadth. → smallest size, 1 slot,
+                 (caller still requires the strongest confirmation).
+      RISK_ON  — clean tape: macro GREEN/STRONG_GREEN AND NIFTY broke its FHH
+                 AND breadth strong AND not compressed. → full size, full slots.
+      BALANCED — everything in between. → half size, mid slots.
+    """
+    if (macro_state in ("RED", "STRONG_RED") or whipsaw
+            or (not nifty_above_vwap and breadth_pct < 40.0)):
+        return RegimeSizing("RISK_OFF", cfg.riskoff_size_mult, cfg.riskoff_slots)
+    if (macro_state in ("GREEN", "STRONG_GREEN") and nifty_fhh_broken
+            and breadth_pct >= 55.0 and not compressed):
+        return RegimeSizing("RISK_ON", cfg.riskon_size_mult, cfg.riskon_slots)
+    return RegimeSizing("BALANCED", cfg.balanced_size_mult, cfg.balanced_slots)
+
+
+def leadership_score(stock_change_pct: float, nifty_change_pct: float,
+                     rvol: float = 1.0) -> float:
+    """Higher = stronger leader. Relative strength (stock outperformance vs the
+    index) scaled by participation (RVOL). Used to sort candidates so the slots
+    fill with the strongest in-play names first — 'buy the leaders'."""
+    rs = stock_change_pct - nifty_change_pct
+    return rs * max(1.0, rvol)
 
 
 # ─── Daily loss cap ──────────────────────────────────────────────────────────
