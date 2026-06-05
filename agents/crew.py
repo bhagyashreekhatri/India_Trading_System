@@ -608,6 +608,29 @@ class TradingCrew:
         except Exception:
             pass
 
+    def _log_funnel(self, summary: dict):
+        """Funnel telemetry (Fix #215). Persist the per-tick funnel counts +
+        reject histogram so we can SEE over days exactly where trades die — in
+        particular WHY the conviction engine takes zero trades while scalp fires.
+        Append-only JSONL; analyzed by tools/analyze_funnel.py. Never breaks the loop."""
+        try:
+            import os, json as _json
+            rec = {
+                "ts":      _now_ist().isoformat(),
+                "active":  summary.get("active_stocks", 0),
+                "setups":  summary.get("setups_found", 0),
+                "scored":  summary.get("signals_scored", 0),
+                "entries": summary.get("entries", 0),
+                "rejects": dict(getattr(self, "_reject_counts", {}) or {}),
+            }
+            path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                                "logs", "funnel.jsonl")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a") as f:
+                f.write(_json.dumps(rec) + "\n")
+        except Exception:
+            pass
+
     def _manage_scalp_positions(self, now):
         """Exit-check every open scalp position. Runs every tick, before any
         gate, so exits fire regardless of the conviction time-gate."""
@@ -3144,6 +3167,9 @@ class TradingCrew:
             "best_open_sym":  best_sym,
             "best_open_pnl":  round(best_unreal, 2),
         }
+
+        # Funnel telemetry (Fix #215) — persist where trades die each tick.
+        self._log_funnel(s)
 
         best_str = f" | best open: {best_sym} ₹{best_unreal:+,.0f}" if best_sym else ""
         print(f"[Crew] Tick #{self._tick} done: {setups} setups | "

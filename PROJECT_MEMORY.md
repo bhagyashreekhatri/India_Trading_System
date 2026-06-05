@@ -604,6 +604,19 @@ records. Build only AFTER the ledger justifies. B5 (conviction HOD session-high)
 daily caps in place. test_scalp_engine + test_orderflow PASS; test_engine.py = 12 known-stale
 failures (pre-existing, NOT a regression — references removed ScoringEngine internals).
 
+- **Fix #215 — funnel-rejection ledger + analyzer (diagnose conviction-zero).** Operator
+  reports: for weeks ONLY the scalp tab enters; conviction (live) tab takes zero. Likely
+  cause = conviction starved at SETUP DETECTION (MOMENTUM_BREAKOUT detector discards the
+  smooth movers scalp rides) and/or the NIFTY-FHH gate. To diagnose with DATA not guesses:
+  `crew._log_funnel()` appends one row/tick to logs/funnel.jsonl {active, setups, scored,
+  entries, rejects:{gate:count}} via `_tick_summary` (every tick flows through it). Analyzer
+  `tools/analyze_funnel.py` aggregates the funnel + ranks drop reasons + prints a VERDICT
+  ("starved at setup detection" vs "dies at conviction gate X" vs "allocator gate Y").
+  Append-only, never breaks the loop. NEXT SESSION: run it, read the verdict, then fix the
+  ONE dominant gate with evidence — or decide conviction is redundant to scalp and retire it.
+  Do NOT loosen conviction blind (it holds the only validated edge). Quick check meanwhile:
+  `journalctl -u trading-system --since today | grep -oE 'SKIP — [a-z_]+' | sort | uniq -c | sort -rn`.
+
 FINAL SCALP GATE SHEET (operator-approved "smart-aggressive", 2026-05-29):
   ENTRY (loose by design — strictness lives at the exit):
     above_vwap=True · up_bar=True · rvol≥1.2 · ob_ratio≥0.7 (OF brain gates live) ·
