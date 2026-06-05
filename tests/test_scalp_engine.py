@@ -124,7 +124,8 @@ print("[PASS] sizing + daily loss cap")
 # ── runner capture: evaluate_manage (partial at target + trail) ──────────────
 from dataclasses import replace as _replace2
 rc = _replace2(cfg, partial_trail_enabled=True, tp1_fraction=0.5,
-               trail_atr_mult=1.0, scratch_enabled=False, time_stop_min=90)
+               trail_atr_mult=1.0, scratch_enabled=False,
+               pretp1_timeout_min=30, time_stop_min=90)
 
 # entry 100, stop 99.6 (0.4%), target 100.8 (2:1), 100 sh
 def _pos(**kw):
@@ -152,9 +153,23 @@ md = evaluate_manage(_pos(stop=101.0, qty_remaining=50, tp1_done=True),
                      15, bar_high=101.2, bar_low=100.95, bar_close=101.0, atr=0.5, cfg=rc)
 assert md.action == "exit_full" and md.reason == "trail_exit" and md.exit_qty == 50, md
 
-# 5. pre-TP1 flat past time stop (scratch off) → time_stop exit
-md = evaluate_manage(_pos(), rc.time_stop_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, atr=0.5, cfg=rc)
+# 5. split time-stop (Fix #213):
+#  5a. pre-TP1 dead trade hits the SHORT timer (30m) → recycle (time_stop exit)
+md = evaluate_manage(_pos(), rc.pretp1_timeout_min, bar_high=100.2, bar_low=99.9, bar_close=100.0, atr=0.5, cfg=rc)
 assert md.action == "exit_full" and md.reason == "time_stop", md
+#  5b. pre-TP1 just BEFORE the short timer → still holding
+md = evaluate_manage(_pos(), rc.pretp1_timeout_min - 1, bar_high=100.2, bar_low=99.9, bar_close=100.0, atr=0.5, cfg=rc)
+assert md.action == "hold", md
+#  5c. post-TP1 runner gets the LONG backstop — at 31m (past pre-timer) it still holds,
+#      only exiting at time_stop_min (90m). Use a flat bar so no trail-up fires.
+md = evaluate_manage(_pos(stop=100.0, qty_remaining=50, tp1_done=True),
+                     rc.pretp1_timeout_min + 1, bar_high=100.05, bar_low=100.01,
+                     bar_close=100.02, atr=0.0, cfg=rc)
+assert md.action == "hold", f"post-TP1 runner should ride past the pre-TP1 timer: {md}"
+md = evaluate_manage(_pos(stop=100.0, qty_remaining=50, tp1_done=True),
+                     rc.time_stop_min, bar_high=100.05, bar_low=100.01,
+                     bar_close=100.02, atr=0.0, cfg=rc)
+assert md.action == "exit_full" and md.reason == "time_stop", f"runner backstop at {rc.time_stop_min}m: {md}"
 
 # 6. pre-TP1 small profit, early → hold
 md = evaluate_manage(_pos(), 4, bar_high=100.3, bar_low=99.9, bar_close=100.2, atr=0.5, cfg=rc)
@@ -171,6 +186,7 @@ import config.settings as S
 live = ScalpConfig.from_settings(S)
 assert live.scratch_enabled is False, f"live scratch should be DISABLED, got {live.scratch_enabled}"
 assert live.time_stop_min == S.SCALP_TIME_STOP_MIN, f"live time_stop {live.time_stop_min} != settings {S.SCALP_TIME_STOP_MIN}"
+assert live.pretp1_timeout_min == S.SCALP_PRETP1_TIMEOUT_MIN, "live pre-TP1 timeout drift"
 assert live.notional_inr == S.SCALP_NOTIONAL_INR, f"live notional {live.notional_inr} != settings {S.SCALP_NOTIONAL_INR}"
 assert live.daily_loss_cap_inr == S.SCALP_DAILY_LOSS_CAP_INR, "live daily cap drift"
 assert live.partial_trail_enabled == S.SCALP_PARTIAL_TRAIL_ENABLED, "live partial-trail flag drift"

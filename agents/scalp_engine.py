@@ -60,7 +60,8 @@ class ScalpConfig:
     tp_pct:               float = 0.008    # fallback target when ATR unavailable
     scratch_enabled:      bool  = True     # False = no time-scratch; ride to target/stop
     scratch_min:          int   = 6
-    time_stop_min:        int   = 20
+    pretp1_timeout_min:   int   = 30       # PRE-TP1 dead-trade timeout (recycle the slot)
+    time_stop_min:        int   = 20       # POST-TP1 runner backstop (let winners ride)
     # runner capture (2026-05-29) — partial at target + trail the rest
     partial_trail_enabled: bool = False    # True = bank tp1_fraction at target, trail remainder
     tp1_fraction:         float = 0.5      # fraction of qty banked at the target
@@ -89,6 +90,7 @@ class ScalpConfig:
             tp_pct=g("SCALP_TP_PCT", 0.008),
             scratch_enabled=g("SCALP_SCRATCH_ENABLED", True),
             scratch_min=g("SCALP_SCRATCH_MIN", 6),
+            pretp1_timeout_min=g("SCALP_PRETP1_TIMEOUT_MIN", 30),
             time_stop_min=g("SCALP_TIME_STOP_MIN", 20),
             partial_trail_enabled=g("SCALP_PARTIAL_TRAIL_ENABLED", False),
             tp1_fraction=g("SCALP_TP1_FRACTION", 0.5),
@@ -331,11 +333,15 @@ def evaluate_manage(
                 return ManageDecision("exit_full", "target", price=target, exit_qty=qty_r)
             return ManageDecision("partial_trail", "tp1", price=target,
                                   exit_qty=exit_qty, new_stop=round(entry, 2))
-        # 4. flat-trade scratch (only if enabled) then hard time stop
+        # 4. flat-trade scratch (only if enabled) then PRE-TP1 dead-trade timeout.
+        # Pre-TP1 uses the SHORT timer (pretp1_timeout_min): a scalp that hasn't
+        # even tagged its target in this window is dead money holding a slot —
+        # recycle it for the next shot (aggression = faster turnover). The LONG
+        # timer (time_stop_min) only applies post-TP1 so winners get room to run.
         in_profit = bar_close >= entry * 1.001
         if cfg.scratch_enabled and minutes_held >= cfg.scratch_min and not in_profit:
             return ManageDecision("exit_full", "scratch", price=round(bar_close, 2), exit_qty=qty_r)
-        if minutes_held >= cfg.time_stop_min:
+        if minutes_held >= cfg.pretp1_timeout_min:
             return ManageDecision("exit_full", "time_stop", price=round(bar_close, 2), exit_qty=qty_r)
         return ManageDecision("hold", "hold")
 

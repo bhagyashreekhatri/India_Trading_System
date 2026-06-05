@@ -758,7 +758,12 @@ SCALP_REQUIRE_UP_BAR           = True      # last completed bar close > open
 SCALP_RVOL_MIN                 = 1.2       # "volume present" — well below the 1.5 momentum gate
 SCALP_OB_RATIO_MIN             = 0.7       # 5-level bid/sell ≥ 0.7 (light book guard; blocks 2:1 sell-stacked fades)
 SCALP_SPREAD_MAX_PCT           = 0.0015    # 0.15% — slightly looser than the 0.10% conviction spread
-SCALP_MAX_EXT_FROM_VWAP_PCT    = 0.015     # don't chase: skip if LTP > 1.5% above VWAP (blocks parabolic blowoff tops)
+SCALP_MAX_EXT_FROM_VWAP_PCT    = 0.020     # don't chase: skip if LTP > 2.0% above VWAP (blocks parabolic blowoff tops).
+                                           # Fix #212 (2026-05-29) — smart-aggressive: was 1.5%. Lets the engine
+                                           # press a STRONG trending name a touch further before calling it a chase;
+                                           # 2.0% still blocks genuine blowoff tops. This is the ONLY entry gate
+                                           # loosened — RVOL/spread/VWAP/order-flow stay tight (loosening those =
+                                           # garbage trades, not aggression). Rollback: 0.015.
 SCALP_CIRCUIT_VETO_PCT         = 0.18      # reuse discovery circuit veto — no entries on ±18% locked names
 
 # ── Exit discipline (where the strictness lives now) ────────────────────────
@@ -781,7 +786,12 @@ SCALP_TP_PCT                   = 0.008     # fallback target when ATR unavailabl
 # bailing early. (FORTIS that day fell −1.85% — the STOP, not the scratch, caps that.)
 SCALP_SCRATCH_ENABLED          = False     # False = no time-scratch; ride to target/stop
 SCALP_SCRATCH_MIN              = 6         # (only used if SCALP_SCRATCH_ENABLED=True)
-SCALP_TIME_STOP_MIN            = 90        # hard max hold — give the target real room (was 20)
+# Split time-stop (Fix #213, 2026-05-29) — smart-aggressive turnover.
+# PRE-TP1: a scalp that hasn't even tagged its target in this window is dead money
+# holding a slot → recycle it for the next shot. POST-TP1: the runner already banked
+# its partial and rides a breakeven-or-better trail, so give it real room.
+SCALP_PRETP1_TIMEOUT_MIN       = 30        # dead-trade timeout BEFORE the target is hit
+SCALP_TIME_STOP_MIN            = 90        # runner backstop AFTER TP1 (let winners ride)
 
 # ── Runner capture: partial-at-target + trail the rest (Fix #209, 2026-05-29) ──
 # The only P&L evidence in the project (280 conviction trades, docs/08 + docs/28)
@@ -794,7 +804,12 @@ SCALP_TIME_STOP_MIN            = 90        # hard max hold — give the target r
 # A/B REVERSIBLE: set False to revert to the pure hard-2:1 exit (evaluate_exit).
 # Logic is pure + unit-tested in tests/test_scalp_engine.py (evaluate_manage).
 SCALP_PARTIAL_TRAIL_ENABLED    = True      # bank partial at target, trail the rest
-SCALP_TP1_FRACTION             = 0.5       # fraction of qty banked at the target
+SCALP_TP1_FRACTION             = 0.4       # fraction of qty banked at the target.
+                                           # Fix #212 (2026-05-29) — smart-aggressive: was 0.5. Bank LESS at the
+                                           # target, let MORE ride the trail. The remaining 60% sits on a
+                                           # breakeven-or-better stop, so the downside is floored while the
+                                           # upside is uncapped — aggression where it belongs (the runner),
+                                           # not in the entry filters. Rollback: 0.5.
 SCALP_TRAIL_ATR_MULT           = 1.0       # post-target trail = this × ATR of recent bars
 
 # Chop safety rail (replaces the impatient scratch): if the engine takes this many

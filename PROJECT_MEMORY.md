@@ -563,6 +563,35 @@ source, stays `PAPER_TRADING=True`). Audit doc: `docs/30_PreLive_Audit_DailyInco
   net, gross, costs, avg net win/loss, and an above/below-breakeven verdict (`crew.py`).
 - **Fix #211 — removed the dead 09:30–10:30 ORB clock gate** (`tools/pattern_tools.py`).
   Three-Laws Law-1 violation in a dormant (uncalled) helper; zero behaviour change.
+- **Fix #212 — smart-aggressive scalp gate tune (cold-start, NOT data-optimized).**
+  Two changes only, both on the upside/press side: `SCALP_MAX_EXT_FROM_VWAP_PCT` 1.5%→2.0%
+  (press strong trending names a touch more before "chasing") and `SCALP_TP1_FRACTION`
+  0.5→0.4 (bank less at target, run more on the breakeven-stopped trail). DELIBERATELY
+  did NOT loosen RVOL/spread/VWAP/order-flow/stop/loss-streak-halt/cooldown — loosening
+  those is fake-aggression (garbage trades / cost bleed / reckless), not edge. Aggression
+  in scalping = size on clean setups + concurrent shots + letting winners run, NOT looser
+  entry filters. These are first-principles cold-start defaults; the ledger validates.
+  Rollback: ext→0.015, tp1_fraction→0.5.
+- **Fix #213 — split scalp time-stop.** Replaced the single `time_stop_min` with TWO timers
+  in `evaluate_manage`: `SCALP_PRETP1_TIMEOUT_MIN=30` (a scalp that hasn't tagged its target
+  in 30m is dead money → recycle the slot, aggressive turnover) and `SCALP_TIME_STOP_MIN=90`
+  as the POST-TP1 runner backstop (winner already banked its partial + rides a BE-or-better
+  trail → give it room). Pre-TP1 branch uses the short timer; post-TP1 backstop uses the long.
+  New ScalpConfig.pretp1_timeout_min + from_settings map. Tests: split-timer cases (pre-TP1
+  recycles at 30, holds at 29; post-TP1 rides past 30, backstops at 90) + live-config lock.
+  Rollback: set SCALP_PRETP1_TIMEOUT_MIN = SCALP_TIME_STOP_MIN.
+
+FINAL SCALP GATE SHEET (operator-approved "smart-aggressive", 2026-05-29):
+  ENTRY (loose by design — strictness lives at the exit):
+    above_vwap=True · up_bar=True · rvol≥1.2 · ob_ratio≥0.7 (OF brain gates live) ·
+    spread≤0.15% · ext≤2.0% from VWAP (#212) · circuit_veto 18% ·
+    order-flow: pressure≥1.0 OR (trend≥+10% AND lift≥0.55) OR wall-absorbed
+  EXIT (where the edge is):
+    stop=max(0.4%,1×ATR) cap 1.0% · target 2:1 · bank 40% at target then trail rest 1×ATR
+    from BE (#209/#212) · pre-TP1 dead-trade recycle 30m · post-TP1 runner backstop 90m (#213)
+  RISK RAILS (NOT loosened — loosening = reckless, not aggressive):
+    5 slots (2 + half-size in compression/pre-breakout) · ₹2L notional · daily cap ₹30k ·
+    loss-streak halt 4 · name cooldown 15m · no new scalps after 14:55
 
 **Pre-live blocker status (verified 2026-05-29) — docs 25/26 are STALE:**
 B1 #184 · B2 #170 · B3 #195 · B4 #186 · B6 #196 — ALL FIXED. Only **B5** remains (conviction
