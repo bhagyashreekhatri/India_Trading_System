@@ -883,6 +883,15 @@ ORDERFLOW_SHADOW               = False     # LIVE (2026-05-25) — dynamic book 
                                            # entries (motion: buyers lifting / wall absorbed),
                                            # falling back to the frozen ratio only when the
                                            # stream isn't warm. Validated across shadow sessions.
+# Fix #216 (2026-05-29) — let the conviction engine use the SAME live order-flow
+# brain as scalp for its book gate. Diagnosed via funnel grep: weak_order_book was
+# 67% of conviction's SKIPs (12/18 in one session) — it was judging the frozen
+# 5-level snapshot (≥1.3) while scalp watched the live tape and took the same names.
+# When True (and ORDERFLOW_SHADOW=False + stream warm): a supportive live read
+# (buyers lifting / wall absorbed) admits even a sell-heavy resting book, and a
+# hostile live read vetoes even a healthy snapshot. Cold stream → frozen ratio as
+# before. Rollback: set False to revert conviction to the frozen-ratio-only gate.
+CONVICTION_USE_ORDERFLOW       = True
 ORDERFLOW_WINDOW_SEC           = 20.0      # rolling window for trend/lift/absorption
 ORDERFLOW_MIN_PRESSURE         = 1.0       # buyers-dominate shortcut (bid5/ask5 ≥ this → OK)
 ORDERFLOW_MIN_LIFT             = 0.55      # ≥55% of windowed volume on upticks = buyers lifting

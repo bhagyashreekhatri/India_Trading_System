@@ -86,6 +86,7 @@ class ConvictionEngine:
         stock_quote: dict,    # {"last_price", "open", "high", "low", "close", "change_pct", ...}
         order_book:  Optional[dict] = None,  # full depth dict from kite_client
         now=None,
+        flow_ok:     Optional[bool] = None,  # Fix #216 — live order-flow read (None=cold→use frozen)
     ) -> ConvictionResult:
         """
         Returns a ConvictionResult. Universal filters fire FIRST (cheapest skips),
@@ -156,8 +157,24 @@ class ConvictionEngine:
                     failed=[f"spread {spread_pct*100:.3f}% > {SPREAD_MAX_PCT*100:.3f}%"],
                 )
 
-        # 3. 5-level order-book depth ratio (replaces top-of-book naive read)
-        if order_book is not None:
+        # 3. Order-book gate. Fix #216 — trust the LIVE order-flow brain over the
+        # frozen 5-level snapshot when it has a warm read (the SAME dynamic read the
+        # scalp engine uses). This closes the gap that made conviction take zero
+        # trades while scalp fired on the same names: conviction was reading a still
+        # photo (frozen ratio ≥1.3) while scalp watched the tape (buyers lifting /
+        # wall absorbed). flow_ok=True → buyers in control on the live tape, admit
+        # even a sell-heavy resting book. flow_ok=False → sellers in control live,
+        # veto even a healthy-looking snapshot. flow_ok=None → stream cold/disabled →
+        # fall back to the frozen ratio exactly as before.
+        if flow_ok is True:
+            pass  # live tape confirms buyers — bypass the frozen ratio gate
+        elif flow_ok is False:
+            return _skip(
+                "weak_orderflow_dynamic",
+                macro_state="-", fhh_state="-",
+                failed=["live order-flow says sellers in control"],
+            )
+        elif order_book is not None:
             ob_ratio = _compute_5level_depth_ratio(order_book)
             if ob_ratio < ORDER_BOOK_RATIO_MIN:
                 return _skip(

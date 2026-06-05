@@ -1983,11 +1983,37 @@ class TradingCrew:
                     class _SetupView:
                         def __init__(self, grade): self.grade = grade
                     setup_view = _SetupView(s.get("grade"))
+                    # Fix #216 — feed conviction the LIVE order-flow read (same brain
+                    # as scalp). Only acts when not in shadow AND the stream is warm
+                    # for this symbol; otherwise flow_ok=None → conviction falls back
+                    # to the frozen 5-level ratio exactly as before. This is what
+                    # revives conviction: weak_order_book was 67% of its SKIPs because
+                    # it judged a still photo while scalp watched the tape.
+                    flow_ok = None
+                    try:
+                        import config.settings as _S
+                        if (getattr(_S, "CONVICTION_USE_ORDERFLOW", True)
+                                and not getattr(_S, "ORDERFLOW_SHADOW", True)
+                                and getattr(self, "orderflow", None) is not None):
+                            from tools.orderflow_metrics import supportive as _supp
+                            _flow = self.orderflow.get_flow(sym)
+                            if getattr(_flow, "fresh", False):
+                                _ok, _why = _supp(
+                                    _flow,
+                                    getattr(_S, "ORDERFLOW_MIN_PRESSURE", 1.0),
+                                    getattr(_S, "ORDERFLOW_MIN_LIFT", 0.55),
+                                    getattr(_S, "ORDERFLOW_MIN_TREND", 0.10),
+                                )
+                                flow_ok = bool(_ok)
+                                print(f"[Conviction] {sym} orderflow={'OK' if _ok else 'VETO'} ({_why})")
+                    except Exception as _fe:
+                        flow_ok = None  # any error → frozen fallback (safe)
                     conviction_result = self.conviction.evaluate(
                         symbol=sym,
                         setup=setup_view,
                         stock_quote=stock_quote,
                         order_book=order_book,
+                        flow_ok=flow_ok,
                     )
                     if conviction_result.tier == "SKIP":
                         print(f"[Conviction] {sym} SKIP — {conviction_result.reasoning}")

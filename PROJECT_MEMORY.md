@@ -616,6 +616,19 @@ failures (pre-existing, NOT a regression — references removed ScoringEngine in
   ONE dominant gate with evidence — or decide conviction is redundant to scalp and retire it.
   Do NOT loosen conviction blind (it holds the only validated edge). Quick check meanwhile:
   `journalctl -u trading-system --since today | grep -oE 'SKIP — [a-z_]+' | sort | uniq -c | sort -rn`.
+- **Fix #216 — wire the live order-flow brain into the conviction book gate (DIAGNOSED, not guessed).**
+  Live funnel grep 2026-05-29 showed conviction's SKIPs: **weak_order_book_ratio ×12 (67%)**,
+  nifty_fhh_not_broken ×3, others ×1. Root cause = conviction judged the FROZEN 5-level snapshot
+  (≥1.3) while the scalp engine watched the LIVE tape (buyers lifting / wall absorbed) and took the
+  same names — that's why scalp fired and conviction took zero. Fix: `conviction.evaluate()` now takes
+  `flow_ok` (None=cold→frozen ratio as before; True=live buyers→bypass frozen gate, admit sell-heavy
+  resting book; False=live sellers→veto even a healthy snapshot). crew `_allocate` computes it from
+  `self.orderflow`+`supportive()` (same thresholds as scalp) only when CONVICTION_USE_ORDERFLOW=True
+  AND ORDERFLOW_SHADOW=False AND stream warm. REUSES the OF brain — no new component. Tests:
+  tests/test_conviction_orderflow.py (cold→frozen / live-OK→admit weak book / live-veto→skip strong
+  book) all pass; scalp+orderflow suites green. Rollback: CONVICTION_USE_ORDERFLOW=False. Low-risk
+  (changing a gate on a DEAD engine can't do worse than zero). Confirm revival via the funnel ledger
+  (#215) over the next few sessions — expect weak_order_book SKIPs to drop and conviction entries > 0.
 
 FINAL SCALP GATE SHEET (operator-approved "smart-aggressive", 2026-05-29):
   ENTRY (loose by design — strictness lives at the exit):
